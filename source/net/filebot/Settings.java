@@ -1,22 +1,18 @@
 package net.filebot;
 
 import static net.filebot.Logging.*;
-import static net.filebot.util.FileUtilities.*;
 
-import java.awt.GraphicsEnvironment;
-import java.io.File;
 import java.util.Locale;
-import java.util.MissingResourceException;
 import java.util.ResourceBundle;
 import java.util.logging.Level;
 import java.util.prefs.BackingStoreException;
 import java.util.prefs.Preferences;
 
 import net.filebot.UserFiles.FileChooser;
-import net.filebot.archive.Archive.Extractor;
 import net.filebot.cli.ArgumentBean;
 import net.filebot.util.PreferencesList;
 import net.filebot.util.PreferencesMap;
+import net.filebot.util.PreferencesMap.JsonAdapter;
 import net.filebot.util.PreferencesMap.PreferencesEntry;
 import net.filebot.util.PreferencesMap.StringAdapter;
 
@@ -43,15 +39,7 @@ public final class Settings {
 	}
 
 	public static String getApiKey(String name) {
-		ResourceBundle bundle = ResourceBundle.getBundle(Settings.class.getName(), Locale.ROOT);
-		if (isAppStore()) {
-			try {
-				return bundle.getString("apikey.appstore." + name);
-			} catch (MissingResourceException e) {
-				// use default value
-			}
-		}
-		return bundle.getString("apikey." + name);
+		return getApplicationProperty("apikey." + name);
 	}
 
 	public static boolean isUnixFS() {
@@ -82,12 +70,20 @@ public final class Settings {
 		return System.getProperty("application.deployment", "jar");
 	}
 
+	public static boolean isPortableApp() {
+		return isApplicationDeployment("portable", "jar");
+	}
+
 	public static boolean isAppStore() {
-		return isApplicationDeployment("mas", "usc");
+		return isApplicationDeployment("mas", "appx");
+	}
+
+	public static boolean isWindowsApp() {
+		return isApplicationDeployment("appx", "msi");
 	}
 
 	public static boolean isUbuntuApp() {
-		return isApplicationDeployment("usc");
+		return isApplicationDeployment("deb", "snap");
 	}
 
 	public static boolean isMacApp() {
@@ -98,8 +94,8 @@ public final class Settings {
 		return isApplicationDeployment("mas");
 	}
 
-	public static boolean isInstalled() {
-		return isApplicationDeployment("mas", "usc", "msi", "spk", "aur");
+	public static boolean isAutoUpdateEnabled() {
+		return isApplicationDeployment("mas", "appx", "snap", "spk", "aur");
 	}
 
 	private static boolean isApplicationDeployment(String... ids) {
@@ -111,12 +107,12 @@ public final class Settings {
 		return false;
 	}
 
-	public static FileChooser getPreferredFileChooser() {
-		return FileChooser.valueOf(System.getProperty("net.filebot.UserFiles.fileChooser", "Swing"));
+	public static String getApplicationUserModelID() {
+		return System.getProperty("net.filebot.AppUserModelID", getApplicationName());
 	}
 
-	public static Extractor getPreferredArchiveExtractor() {
-		return Extractor.valueOf(System.getProperty("net.filebot.Archive.extractor", "SevenZipNativeBindings"));
+	public static FileChooser getPreferredFileChooser() {
+		return FileChooser.valueOf(System.getProperty("net.filebot.UserFiles.fileChooser", "Swing"));
 	}
 
 	public static int getPreferredThreadPoolSize() {
@@ -135,6 +131,8 @@ public final class Settings {
 	public static String getAppStoreName() {
 		if (isMacApp())
 			return "Mac App Store";
+		if (isWindowsApp())
+			return "Windows Store";
 		if (isUbuntuApp())
 			return "Ubuntu Software Center";
 
@@ -144,8 +142,10 @@ public final class Settings {
 	public static String getAppStoreLink() {
 		if (isMacApp())
 			return getApplicationProperty("link.mas");
+		if (isWindowsApp())
+			return getApplicationProperty("link.mws");
 		if (isUbuntuApp())
-			return getApplicationProperty("link.usc");
+			return null;
 
 		return null;
 	}
@@ -164,98 +164,21 @@ public final class Settings {
 	}
 
 	public static String getJavaRuntimeIdentifier() {
-		return String.format("%s %s %s", System.getProperty("java.runtime.name"), System.getProperty("java.version"), GraphicsEnvironment.isHeadless() ? "(headless)" : "").trim();
+		return String.format("%s %s", System.getProperty("java.runtime.name"), System.getProperty("java.version"));
 	}
 
-	private static String[] applicationArgumentArray;
+	public static String getSystemIdentifier() {
+		return String.format("%s %s (%s)", System.getProperty("os.name"), System.getProperty("os.version"), System.getProperty("os.arch"));
+	}
 
-	protected static void setApplicationArgumentArray(String[] args) {
-		applicationArgumentArray = args;
+	private static ArgumentBean applicationArguments;
+
+	public static void setApplicationArguments(ArgumentBean args) {
+		applicationArguments = args;
 	}
 
 	public static ArgumentBean getApplicationArguments() {
-		try {
-			return ArgumentBean.parse(applicationArgumentArray);
-		} catch (Exception e) {
-			throw new IllegalStateException(e);
-		}
-	}
-
-	public static File getApplicationFolder() {
-		return ApplicationFolder.AppData.get(); // added for script compatibility
-	}
-
-	public static enum ApplicationFolder {
-
-		AppData {
-
-			@Override
-			public File get() {
-				String appdata = System.getProperty("application.dir");
-
-				if (appdata != null) {
-					// use given $APP_DATA folder
-					return new File(appdata);
-				} else {
-					// use $HOME/.filebot as application data folder
-					return new File(System.getProperty("user.home"), ".filebot");
-				}
-			}
-		},
-
-		UserHome {
-
-			@Override
-			public File get() {
-				// The user.home of sandboxed applications will point to the application-specific container
-				if (isMacSandbox()) {
-					return new File("/Users", System.getProperty("user.name", "anonymous"));
-				}
-
-				// default user home
-				return new File(System.getProperty("user.home"));
-			}
-
-		},
-
-		Temp {
-
-			@Override
-			public File get() {
-				return new File(System.getProperty("java.io.tmpdir"));
-			}
-		},
-
-		Cache {
-
-			@Override
-			public File get() {
-				String cache = System.getProperty("application.cache");
-				if (cache != null) {
-					return new File(cache);
-				}
-
-				// default to $APP_DATA/cache
-				return AppData.resolve("cache");
-			}
-		};
-
-		public abstract File get();
-
-		public File resolve(String name) {
-			return new File(getCanonicalFile(), name);
-		}
-
-		public File getCanonicalFile() {
-			File path = get();
-			try {
-				return createFolders(path.getCanonicalFile());
-			} catch (Exception e) {
-				debug.log(Level.SEVERE, String.format("Failed to create application folder: %s => %s", this, path), e);
-				return path;
-			}
-		}
-
+		return applicationArguments;
 	}
 
 	public static Settings forPackage(Class<?> type) {
@@ -300,8 +223,16 @@ public final class Settings {
 		return PreferencesMap.map(prefs);
 	}
 
+	public <T> PreferencesMap<T> asMap(Class<T> cls) {
+		return PreferencesMap.map(prefs, new JsonAdapter(cls));
+	}
+
 	public PreferencesList<String> asList() {
 		return PreferencesList.map(prefs);
+	}
+
+	public <T> PreferencesList<T> asList(Class<T> cls) {
+		return PreferencesList.map(prefs, new JsonAdapter(cls));
 	}
 
 	public void clear() {

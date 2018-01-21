@@ -22,9 +22,9 @@ import java.io.File;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
-import java.util.TreeSet;
 import java.util.function.Function;
 import java.util.logging.Level;
 
@@ -34,8 +34,7 @@ import javax.swing.JDialog;
 import javax.swing.SwingUtilities;
 
 import net.filebot.ResourceManager;
-import net.filebot.Settings;
-import net.filebot.mac.MacAppUtilities;
+import net.filebot.platform.mac.MacAppUtilities;
 import net.filebot.ui.subtitle.upload.SubtitleUploadDialog;
 import net.filebot.util.FileUtilities;
 import net.filebot.util.FileUtilities.ParentFilter;
@@ -142,7 +141,7 @@ abstract class SubtitleDropTarget extends JButton {
 		@Override
 		public void actionPerformed(ActionEvent evt) {
 			// collect media file extensions (video and subtitle files)
-			List<File> files = showLoadDialogSelectFiles(true, true, null, combineFilter(VIDEO_FILES, SUBTITLE_FILES), "Select Video Folder", evt);
+			List<File> files = showLoadDialogSelectFiles(true, true, null, ExtensionFileFilter.union(VIDEO_FILES, SUBTITLE_FILES), "Select Video Folder", evt);
 
 			if (files.size() > 0 && getDropAction(files) != DropAction.Cancel) {
 				handleDrop(files);
@@ -156,34 +155,30 @@ abstract class SubtitleDropTarget extends JButton {
 
 		public abstract SubtitleProvider[] getSubtitleProviders();
 
-		public abstract String getQueryLanguage();
+		public abstract Locale getQueryLanguage();
 
 		@Override
-		protected DropAction getDropAction(List<File> input) {
+		protected DropAction getDropAction(List<File> selection) {
 			// accept video files and folders
-			return filter(input, VIDEO_FILES, FOLDERS).size() > 0 ? DropAction.Accept : DropAction.Cancel;
+			return filter(selection, VIDEO_FILES, FOLDERS).size() > 0 ? DropAction.Accept : DropAction.Cancel;
 		}
 
 		@Override
-		protected boolean handleDrop(List<File> input) {
+		protected boolean handleDrop(List<File> selection) {
 			if (getQueryLanguage() == null) {
 				log.info("Please select your preferred subtitle language.");
 				return false;
 			}
 
-			if (getSubtitleService().isAnonymous() && !Settings.isAppStore()) {
+			if (getSubtitleService().isAnonymous() && !isAppStore()) {
 				log.info(String.format("%s: Please enter your login details.", getSubtitleService().getName()));
 				return false;
 			}
 
-			// perform a drop action depending on the given files
-			final Collection<File> videoFiles = new TreeSet<File>();
+			List<File> files = listFiles(selection, VIDEO_FILES, HUMAN_NAME_ORDER);
 
-			// video files only
-			videoFiles.addAll(filter(listFiles(input), VIDEO_FILES));
-
-			if (videoFiles.size() > 0) {
-				handleDownload(videoFiles);
+			if (files.size() > 0) {
+				handleDownload(files);
 				return true;
 			}
 
@@ -234,13 +229,13 @@ abstract class SubtitleDropTarget extends JButton {
 	public static abstract class Upload extends SubtitleDropTarget {
 
 		@Override
-		protected DropAction getDropAction(List<File> input) {
+		protected DropAction getDropAction(List<File> selection) {
 			// accept video files and folders
-			return filter(input, SUBTITLE_FILES).size() > 0 || filter(input, FOLDERS).size() > 0 ? DropAction.Accept : DropAction.Cancel;
+			return filter(selection, SUBTITLE_FILES).size() > 0 || filter(selection, FOLDERS).size() > 0 ? DropAction.Accept : DropAction.Cancel;
 		}
 
 		@Override
-		protected boolean handleDrop(List<File> input) {
+		protected boolean handleDrop(List<File> selection) {
 			if (getSubtitleService().isAnonymous()) {
 				log.info(String.format("%s: You must be logged in to upload subtitles.", getSubtitleService().getName()));
 				return false;
@@ -250,19 +245,17 @@ abstract class SubtitleDropTarget extends JButton {
 
 			// make sure we have access to the parent folder structure, not just the dropped file
 			if (isMacSandbox()) {
-				MacAppUtilities.askUnlockFolders(getWindow(this), input);
+				MacAppUtilities.askUnlockFolders(getWindow(this), selection);
 			}
 
 			// perform a drop action depending on the given files
-			final Collection<File> files = new TreeSet<File>();
+			List<File> files = listFiles(selection, FILES, HUMAN_NAME_ORDER);
 
-			// video files only
-			files.addAll(listFiles(input));
+			List<File> videos = filter(files, VIDEO_FILES);
+			List<File> subtitles = filter(files, SUBTITLE_FILES);
 
-			final List<File> videos = filter(files, VIDEO_FILES);
-			final List<File> subtitles = filter(files, SUBTITLE_FILES);
+			Map<File, File> uploadPlan = new LinkedHashMap<File, File>();
 
-			final Map<File, File> uploadPlan = new LinkedHashMap<File, File>();
 			for (File subtitle : subtitles) {
 				File video = getVideoForSubtitle(subtitle, filter(videos, new ParentFilter(subtitle.getParentFile())));
 				uploadPlan.put(subtitle, video);
@@ -274,6 +267,7 @@ abstract class SubtitleDropTarget extends JButton {
 				handleUpload(uploadPlan);
 				return true;
 			}
+
 			return false;
 		}
 

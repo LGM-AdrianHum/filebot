@@ -10,14 +10,12 @@ import java.io.InputStream;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
-import java.util.Arrays;
 import java.util.Map;
 import java.util.jar.JarEntry;
 import java.util.jar.JarInputStream;
 
-import com.google.common.io.ByteStreams;
-
 import net.filebot.Resource;
+import net.filebot.util.ByteBufferOutputStream;
 
 public class ScriptBundle implements ScriptProvider {
 
@@ -37,16 +35,19 @@ public class ScriptBundle implements ScriptProvider {
 					continue;
 
 				// completely read and verify current jar entry
-				byte[] bytes = ByteStreams.toByteArray(jar);
+				ByteBufferOutputStream buffer = new ByteBufferOutputStream(f.getSize() > 0 ? f.getSize() : 8192);
+				buffer.transferFully(jar);
+
 				jar.closeEntry();
 
 				// file must be signed
 				Certificate[] certificates = f.getCertificates();
 
-				if (certificates == null || stream(f.getCertificates()).noneMatch(certificate::equals))
-					throw new SecurityException(String.format("BAD certificate: %s", Arrays.toString(certificates)));
+				if (certificates == null || stream(f.getCertificates()).noneMatch(certificate::equals)) {
+					throw new SecurityException("BAD certificate: " + asList(certificates));
+				}
 
-				return new String(bytes, UTF_8);
+				return UTF_8.decode(buffer.getByteBuffer()).toString();
 			}
 		}
 

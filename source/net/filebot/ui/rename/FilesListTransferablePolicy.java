@@ -1,6 +1,5 @@
 package net.filebot.ui.rename;
 
-import static java.nio.charset.StandardCharsets.*;
 import static java.util.stream.Collectors.*;
 import static net.filebot.Logging.*;
 import static net.filebot.MediaTypes.*;
@@ -8,10 +7,10 @@ import static net.filebot.util.FileUtilities.*;
 
 import java.awt.datatransfer.Transferable;
 import java.io.File;
-import java.nio.file.Files;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.logging.Level;
 
@@ -50,36 +49,37 @@ class FilesListTransferablePolicy extends BackgroundFileTransferablePolicy<File>
 
 	@Override
 	protected void load(List<File> files, TransferAction action) {
-		Set<File> fileset = new LinkedHashSet<File>();
+		// collect files recursively and eliminate duplicates
+		Set<File> sink = new LinkedHashSet<File>(64, 4);
 
 		// load files recursively by default
-		load(files, action != TransferAction.LINK, fileset);
+		load(files, action != TransferAction.LINK, sink);
 
 		// use fast file to minimize system calls like length(), isDirectory(), isFile(), ...
-		publish(fileset.stream().map(FastFile::new).toArray(File[]::new));
+		publish(sink.stream().map(FastFile::new).toArray(File[]::new));
 	}
 
 	private void load(List<File> files, boolean recursive, Collection<File> sink) {
 		for (File f : files) {
-			// ignore hidden files
-			if (f.isHidden()) {
-				continue;
-			}
-
 			// load file paths from text files
 			if (recursive && LIST_FILES.accept(f)) {
 				try {
-					List<File> list = Files.lines(f.toPath(), UTF_8).map(File::new).filter(it -> {
-						return it.isAbsolute() && it.exists();
-					}).collect(toList());
+					List<File> paths = readLines(f).stream().filter(s -> s.length() > 0).map(path -> {
+						try {
+							File file = new File(path);
+							return file.isAbsolute() && file.exists() ? file : null;
+						} catch (Exception e) {
+							return null; // ignore invalid file paths
+						}
+					}).filter(Objects::nonNull).collect(toList());
 
-					if (list.isEmpty()) {
+					if (paths.isEmpty()) {
 						sink.add(f); // treat as simple text file
 					} else {
-						load(list, false, sink); // add paths from text file
+						load(paths, false, sink); // add paths from text file
 					}
 				} catch (Exception e) {
-					debug.log(Level.WARNING, e.getMessage(), e);
+					debug.log(Level.WARNING, "Failed to read paths from text file: " + e.getMessage());
 				}
 			}
 
@@ -90,7 +90,7 @@ class FilesListTransferablePolicy extends BackgroundFileTransferablePolicy<File>
 
 			// load folders recursively
 			else if (f.isDirectory()) {
-				load(sortByUniquePath(getChildren(f)), true, sink); // FORCE NATURAL FILE ORDER
+				load(getChildren(f, NOT_HIDDEN, HUMAN_NAME_ORDER), true, sink); // FORCE NATURAL FILE ORDER
 			}
 		}
 	}

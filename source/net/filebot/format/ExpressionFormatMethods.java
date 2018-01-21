@@ -1,13 +1,24 @@
 package net.filebot.format;
 
+import static java.util.Arrays.*;
 import static java.util.regex.Pattern.*;
+import static java.util.stream.Collectors.*;
+import static net.filebot.MediaTypes.*;
+import static net.filebot.WebServices.*;
 import static net.filebot.format.ExpressionFormatFunctions.*;
+import static net.filebot.media.MediaDetection.*;
+import static net.filebot.util.RegularExpressions.*;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.text.Normalizer;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.Temporal;
+import java.time.temporal.TemporalAmount;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -15,10 +26,14 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
+import java.util.TreeMap;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
+import org.codehaus.groovy.runtime.DefaultGroovyMethods;
 import org.codehaus.groovy.runtime.typehandling.DefaultTypeTransformation;
 
 import com.ibm.icu.text.Transliterator;
@@ -27,7 +42,10 @@ import groovy.lang.Closure;
 import net.filebot.Language;
 import net.filebot.similarity.Normalization;
 import net.filebot.util.FileUtilities;
-import net.filebot.util.StringUtilities;
+import net.filebot.web.Episode;
+import net.filebot.web.EpisodeInfo;
+import net.filebot.web.Person;
+import net.filebot.web.SeriesInfo;
 import net.filebot.web.SimpleDate;
 
 public class ExpressionFormatMethods {
@@ -63,6 +81,10 @@ public class ExpressionFormatMethods {
 		return pad(self.toString(), length, "0");
 	}
 
+	public static double round(Number self, int precision) {
+		return DefaultGroovyMethods.round(self.doubleValue(), precision);
+	}
+
 	/**
 	 * Return a substring matching the given pattern or break.
 	 */
@@ -75,7 +97,7 @@ public class ExpressionFormatMethods {
 		if (matcher.find()) {
 			return firstCapturingGroup(matcher, matchGroup);
 		} else {
-			throw new Exception("Pattern not found");
+			throw new Exception("Pattern not found: " + self);
 		}
 	}
 
@@ -94,7 +116,7 @@ public class ExpressionFormatMethods {
 		}
 
 		if (matches.isEmpty()) {
-			throw new Exception("Pattern not found");
+			throw new Exception("Pattern not found: " + self);
 		}
 		return matches;
 	}
@@ -131,10 +153,7 @@ public class ExpressionFormatMethods {
 	 * e.g. "Doctor Who" -> "Doctor_Who"
 	 */
 	public static String space(String self, String replacement) {
-		self = self.replaceAll("[:?._]", " ").trim();
-
-		// replace space sequences with a single blank
-		return Normalization.replaceSpace(self, replacement);
+		return Normalization.normalizeSpace(self, replacement);
 	}
 
 	/**
@@ -142,8 +161,17 @@ public class ExpressionFormatMethods {
 	 *
 	 * e.g. "Sissi: The Young Empress" -> "Sissi - The Young Empress"
 	 */
-	public static String colon(String self, String replacement) {
-		return compile("\\s*[:]\\s*", UNICODE_CHARACTER_CLASS).matcher(self).replaceAll(replacement);
+	public static String colon(String self, String colon) {
+		return COLON.matcher(self).replaceAll(colon);
+	}
+
+	/**
+	 * Replace colon to make the name more Windows friendly.
+	 *
+	 * e.g. "12:00 A.M.-1:00 A.M." -> "12.00 A.M.-1.00 A.M."
+	 */
+	public static String colon(String self, String ratio, String colon) {
+		return COLON.matcher(RATIO.matcher(self).replaceAll(ratio)).replaceAll(colon);
 	}
 
 	/**
@@ -152,7 +180,7 @@ public class ExpressionFormatMethods {
 	 * e.g. "V_MPEG4/ISO/AVC" -> "V_MPEG4.ISO.AVC"
 	 */
 	public static String slash(String self, String replacement) {
-		return compile("\\s*[\\\\/]+\\s*", UNICODE_CHARACTER_CLASS).matcher(self).replaceAll(replacement);
+		return SLASH.matcher(self).replaceAll(replacement);
 	}
 
 	/**
@@ -161,15 +189,27 @@ public class ExpressionFormatMethods {
 	 * e.g. "The Day a new Demon was born" -> "The Day A New Demon Was Born"
 	 */
 	public static String upperInitial(String self) {
-		Matcher matcher = compile("(?<=[&()+.,-;<=>?\\[\\]_{|}~ ]|^)[a-z]").matcher(self);
+		return replaceHeadTail(self, String::toUpperCase, String::toString);
+	}
+
+	/**
+	 * Lower-case all letters that are not initials.
+	 *
+	 * e.g. "Gundam SEED" -> "Gundam Seed"
+	 */
+	public static String lowerTrail(String self) {
+		return replaceHeadTail(self, String::toString, String::toLowerCase);
+	}
+
+	public static String replaceHeadTail(String self, Function<String, String> head, Function<String, String> tail) {
+		Matcher matcher = compile("\\b(['`´]|\\p{Alnum})(\\p{Alnum}*)\\b", UNICODE_CHARACTER_CLASS).matcher(self);
 
 		StringBuffer buffer = new StringBuffer();
 		while (matcher.find()) {
-			matcher.appendReplacement(buffer, matcher.group().toUpperCase());
+			matcher.appendReplacement(buffer, head.apply(matcher.group(1)) + tail.apply(matcher.group(2)));
 		}
-		matcher.appendTail(buffer);
 
-		return buffer.toString();
+		return matcher.appendTail(buffer).toString();
 	}
 
 	public static String sortName(String self) {
@@ -182,17 +222,15 @@ public class ExpressionFormatMethods {
 
 	public static String sortInitial(String self) {
 		// use primary initial, ignore The XY, A XY, etc
-		String s = ascii(sortName(self)).toUpperCase();
-		int c = s.codePointAt(0);
+		char c = ascii(sortName(self)).charAt(0);
 
 		if (Character.isDigit(c)) {
 			return "0-9";
+		} else if (Character.isLetter(c)) {
+			return String.valueOf(c).toUpperCase();
+		} else {
+			return null;
 		}
-		if (Character.isLetter(c)) {
-			return String.valueOf(Character.toChars(c));
-		}
-
-		return null;
 	}
 
 	/**
@@ -201,32 +239,7 @@ public class ExpressionFormatMethods {
 	 * e.g. "Deep Space 9" -> "DS9"
 	 */
 	public static String acronym(String self) {
-		String name = sortName(self, "$2");
-		Matcher matcher = compile("(?<=[&()+.,-;<=>?\\[\\]_{|}~ ]|^)[\\p{Alnum}]").matcher(name);
-
-		StringBuilder buffer = new StringBuilder();
-		while (matcher.find()) {
-			buffer.append(matcher.group().toUpperCase());
-		}
-
-		return buffer.toString();
-	}
-
-	/**
-	 * Lower-case all letters that are not initials.
-	 *
-	 * e.g. "Gundam SEED" -> "Gundam Seed"
-	 */
-	public static String lowerTrail(String self) {
-		Matcher matcher = compile("\\b(\\p{Alpha})(\\p{Alpha}+)\\b").matcher(self);
-
-		StringBuffer buffer = new StringBuffer();
-		while (matcher.find()) {
-			matcher.appendReplacement(buffer, matcher.group(1) + matcher.group(2).toLowerCase());
-		}
-		matcher.appendTail(buffer);
-
-		return buffer.toString();
+		return compile("\\s|\\B\\p{Alnum}+", UNICODE_CHARACTER_CLASS).matcher(space(sortName(self), " ")).replaceAll("");
 	}
 
 	public static String truncate(String self, int limit) {
@@ -243,9 +256,9 @@ public class ExpressionFormatMethods {
 		int softLimit = 0;
 		Matcher matcher = compile(nonWordPattern, CASE_INSENSITIVE | UNICODE_CHARACTER_CLASS).matcher(self);
 		while (matcher.find()) {
-			if (matcher.start() > hardLimit)
+			if (matcher.start() > hardLimit) {
 				break;
-
+			}
 			softLimit = matcher.start();
 		}
 		return truncate(self, softLimit);
@@ -274,14 +287,21 @@ public class ExpressionFormatMethods {
 	/**
 	 * Find a matcher that matches the given pattern (case-insensitive)
 	 */
-	public static Matcher findMatch(String self, String pattern) {
-		if (pattern != null) {
-			Matcher matcher = compile(pattern, CASE_INSENSITIVE | UNICODE_CHARACTER_CLASS).matcher(self);
-			if (matcher.find()) {
-				return matcher.reset();
-			}
-		}
-		return null;
+	public static boolean findMatch(String self, String pattern) {
+		if (pattern == null || pattern.isEmpty())
+			return false;
+
+		return compile(pattern, CASE_INSENSITIVE | UNICODE_CHARACTER_CLASS).matcher(self).find();
+	}
+
+	/**
+	 * Find a matcher that matches the given pattern (case-insensitive) but matches only if the pattern is enclosed in word-boundaries
+	 */
+	public static boolean findWordMatch(String self, String pattern) {
+		if (pattern == null || pattern.isEmpty())
+			return false;
+
+		return findMatch(self, "\\b(" + pattern + ")\\b");
 	}
 
 	/**
@@ -294,7 +314,7 @@ public class ExpressionFormatMethods {
 	}
 
 	public static String replaceTrailingBrackets(String self, String replacement) {
-		return compile("\\s*[(]([^)]*)[)]$", UNICODE_CHARACTER_CLASS).matcher(self).replaceAll(replacement).trim();
+		return compile("\\s*[(]([^)]*)[)]$", UNICODE_CHARACTER_CLASS).matcher(self).replaceAll(replacement);
 	}
 
 	/**
@@ -322,6 +342,36 @@ public class ExpressionFormatMethods {
 	}
 
 	/**
+	 * Replace numbers 1..12 with Roman numerals
+	 * 
+	 * e.g. "Star Wars: Episode 4" -> "Star Wars: Episode IV"
+	 */
+	public static String roman(String self) {
+		TreeMap<Integer, String> numerals = new TreeMap<Integer, String>();
+		numerals.put(10, "X");
+		numerals.put(9, "IX");
+		numerals.put(5, "V");
+		numerals.put(4, "IV");
+		numerals.put(1, "I");
+
+		StringBuffer s = new StringBuffer();
+		Matcher m = compile("\\b\\d+\\b").matcher(self);
+		while (m.find()) {
+			int n = Integer.parseInt(m.group());
+			m.appendReplacement(s, n >= 1 && n <= 12 ? roman(n, numerals) : m.group());
+		}
+		return m.appendTail(s).toString();
+	}
+
+	public static String roman(Integer n, TreeMap<Integer, String> numerals) {
+		int l = numerals.floorKey(n);
+		if (n == l) {
+			return numerals.get(n);
+		}
+		return numerals.get(l) + roman(n - l, numerals);
+	}
+
+	/**
 	 * Apply ICU transliteration
 	 *
 	 * @see http://userguide.icu-project.org/transforms/general
@@ -340,11 +390,15 @@ public class ExpressionFormatMethods {
 	}
 
 	public static String ascii(String self, String fallback) {
-		return Transliterator.getInstance("Any-Latin;Latin-ASCII;[:Diacritic:]remove").transform(asciiQuotes(self)).replaceAll("[^\\p{ASCII}]+", fallback).trim();
+		return Transliterator.getInstance("Any-Latin;Latin-ASCII;[:Diacritic:]remove").transform(asciiQuotes(self)).replaceAll("\\P{ASCII}+", fallback).trim();
 	}
 
 	public static String asciiQuotes(String self) {
 		return Normalization.normalizeQuotationMarks(self);
+	}
+
+	public static boolean isLatin(String self) {
+		return Normalizer.normalize(self, Normalizer.Form.NFD).replaceAll("\\p{InCombiningDiacriticalMarks}", "").matches("\\p{InBasicLatin}+");
 	}
 
 	/**
@@ -364,21 +418,30 @@ public class ExpressionFormatMethods {
 		return self;
 	}
 
-	/**
-	 * Join non-empty String values and prepend prefix / append suffix values
-	 *
-	 * e.g. (1..3).join('-', '[', ']')
-	 *
-	 * Unwind if list is empty
-	 *
-	 * e.g. [].join('-', '[', ']') => Exception: List is empty
-	 */
-	public static String join(Collection<?> self, String delimiter, String prefix, String suffix) throws Exception {
-		String[] values = self.stream().map(StringUtilities::asNonEmptyString).filter(Objects::nonNull).toArray(String[]::new);
-		if (values.length > 0) {
-			return prefix + String.join(delimiter, values) + suffix;
+	public static String joining(Collection<?> self, String delimiter) throws Exception {
+		String[] list = self.stream().filter(Objects::nonNull).map(Objects::toString).filter(s -> !s.isEmpty()).toArray(String[]::new);
+		if (list.length > 0) {
+			return String.join(delimiter, list);
 		}
-		throw new Exception("List is empty");
+
+		throw new Exception("Collection did not yield any values: " + self);
+	}
+
+	public static String joiningDistinct(Collection<?> self, String delimiter, Closure<?>... mapper) throws Exception {
+		Stream<?> stream = self.stream().filter(Objects::nonNull);
+
+		// apply custom mappers if any
+		if (mapper.length > 0) {
+			stream = stream.flatMap(v -> stream(mapper).map(m -> m.call(v)).filter(Objects::nonNull));
+		}
+
+		// sort unique
+		String[] list = stream.map(Objects::toString).filter(s -> !s.isEmpty()).distinct().sorted().toArray(String[]::new);
+		if (list.length > 0) {
+			return String.join(delimiter, list);
+		}
+
+		throw new Exception("Collection did not yield any values: " + self);
 	}
 
 	/**
@@ -390,14 +453,36 @@ public class ExpressionFormatMethods {
 		if (DefaultTypeTransformation.castToBoolean(c.call(self))) {
 			return self;
 		}
-		throw new Exception("Check failed");
+
+		throw new Exception("Object failed check: " + self);
 	}
 
 	/**
 	 * File utilities
 	 */
+	public static File derive(File self, Object tag, Object... tagN) {
+		// e.g. plex.derive{" by $director"}{" [$vc, $ac]"}
+		String name = FileUtilities.getName(self);
+		String extension = self.getName().substring(name.length());
+
+		// e.g. Avatar (2009).eng.srt => Avatar (2009) 1080p.eng.srt
+		if (SUBTITLE_FILES.accept(self)) {
+			Matcher nameMatcher = releaseInfo.getSubtitleLanguageTagPattern().matcher(name);
+			if (nameMatcher.find()) {
+				extension = name.substring(nameMatcher.start() - 1) + extension;
+				name = name.substring(0, nameMatcher.start() - 1);
+			}
+		}
+
+		return new File(self.getParentFile(), concat(name, slash(concat(tag, null, tagN), ""), extension));
+	}
+
 	public static File getRoot(File self) {
 		return FileUtilities.listPath(self).get(0);
+	}
+
+	public static File getTail(File self) {
+		return FileUtilities.getRelativePathTail(self, FileUtilities.listPath(self).size() - 1);
 	}
 
 	public static List<File> listPath(File self) {
@@ -425,17 +510,13 @@ public class ExpressionFormatMethods {
 		return 0;
 	}
 
-	public static long getCreationDate(File self) {
-		try {
-			BasicFileAttributes attr = Files.getFileAttributeView(self.toPath(), BasicFileAttributeView.class).readAttributes();
-			long creationDate = attr.creationTime().toMillis();
-			if (creationDate > 0) {
-				return creationDate;
-			}
-			return attr.lastModifiedTime().toMillis();
-		} catch (IOException e) {
-			throw new RuntimeException(e);
+	public static long getCreationDate(File self) throws IOException {
+		BasicFileAttributes attr = Files.getFileAttributeView(self.toPath(), BasicFileAttributeView.class).readAttributes();
+		long creationDate = attr.creationTime().toMillis();
+		if (creationDate > 0) {
+			return creationDate;
 		}
+		return attr.lastModifiedTime().toMillis();
 	}
 
 	public static File toFile(String self) {
@@ -474,6 +555,39 @@ public class ExpressionFormatMethods {
 
 	public static String plus(SimpleDate self, Object other) {
 		return concat(self, other);
+	}
+
+	public static List<?> bounds(Iterable<?> self) {
+		return Stream.of(DefaultGroovyMethods.min(self), DefaultGroovyMethods.max(self)).filter(Objects::nonNull).distinct().collect(toList());
+	}
+
+	public static String format(Temporal self, String pattern) {
+		return DateTimeFormatter.ofPattern(pattern, Locale.ENGLISH).format(self);
+	}
+
+	public static String format(TemporalAmount self, String pattern) {
+		return DateTimeFormatter.ofPattern(pattern, Locale.ENGLISH).format(LocalTime.MIDNIGHT.plus(self));
+	}
+
+	/**
+	 * Episode utilities (EXPERIMENTAL)
+	 */
+	public static EpisodeInfo getInfo(Episode self) throws Exception {
+		if (TheTVDB.getIdentifier().equals(self.getSeriesInfo().getDatabase())) {
+			return TheTVDB.getEpisodeInfo(self.getId(), Locale.ENGLISH);
+		}
+		return null;
+	}
+
+	public static List<String> getActors(SeriesInfo self) throws Exception {
+		if (TheTVDB.getIdentifier().equals(self.getDatabase())) {
+			return TheTVDB.getActors(self.getId(), Locale.ENGLISH).stream().map(Person::getName).collect(toList());
+		}
+		return null;
+	}
+
+	private ExpressionFormatMethods() {
+		throw new UnsupportedOperationException();
 	}
 
 }

@@ -3,22 +3,23 @@ package net.filebot.web;
 import java.io.Serializable;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.util.Arrays;
+import java.time.temporal.ChronoField;
+import java.time.temporal.Temporal;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class SimpleDate implements Serializable, Comparable<Object> {
 
-	private int year;
-	private int month;
-	private int day;
+	protected int year;
+	protected int month;
+	protected int day;
 
-	protected SimpleDate() {
-		// used by serializer
+	public SimpleDate() {
+		// used by deserializer
 	}
 
 	public SimpleDate(int year, int month, int day) {
@@ -27,12 +28,12 @@ public class SimpleDate implements Serializable, Comparable<Object> {
 		this.day = day;
 	}
 
-	public SimpleDate(LocalDate date) {
-		this(date.getYear(), date.getMonthValue(), date.getDayOfMonth());
+	public SimpleDate(Temporal date) {
+		this(date.get(ChronoField.YEAR), date.get(ChronoField.MONTH_OF_YEAR), date.get(ChronoField.DAY_OF_MONTH));
 	}
 
 	public SimpleDate(long t) {
-		this(LocalDateTime.ofInstant(Instant.ofEpochMilli(t), ZoneId.systemDefault()).toLocalDate());
+		this(Instant.ofEpochMilli(t).atZone(ZoneId.systemDefault()));
 	}
 
 	public int getYear() {
@@ -47,17 +48,13 @@ public class SimpleDate implements Serializable, Comparable<Object> {
 		return day;
 	}
 
-	public long getTimeStamp() {
-		return this.toLocalDate().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli();
-	}
-
 	@Override
 	public boolean equals(Object obj) {
 		if (obj instanceof SimpleDate) {
 			SimpleDate other = (SimpleDate) obj;
 			return year == other.year && month == other.month && day == other.day;
 		} else if (obj instanceof CharSequence) {
-			return this.toString().equals(obj.toString());
+			return toString().equals(obj.toString());
 		}
 
 		return super.equals(obj);
@@ -78,12 +75,12 @@ public class SimpleDate implements Serializable, Comparable<Object> {
 	}
 
 	public int compareTo(SimpleDate other) {
-		return Long.compare(this.getTimeStamp(), other.getTimeStamp());
+		return Long.compare(getTimeStamp(), other.getTimeStamp());
 	}
 
 	@Override
 	public int hashCode() {
-		return Arrays.hashCode(new Object[] { year, month, day });
+		return Objects.hash(year, month, day);
 	}
 
 	@Override
@@ -92,11 +89,19 @@ public class SimpleDate implements Serializable, Comparable<Object> {
 	}
 
 	public String format(String pattern) {
-		return DateTimeFormatter.ofPattern(pattern, Locale.ENGLISH).format(this.toLocalDate());
+		return DateTimeFormatter.ofPattern(pattern, Locale.ENGLISH).format(toLocalDate());
 	}
 
 	public LocalDate toLocalDate() {
 		return LocalDate.of(year, month, day);
+	}
+
+	public Instant toInstant() {
+		return toLocalDate().atStartOfDay(ZoneId.systemDefault()).toInstant();
+	}
+
+	public long getTimeStamp() {
+		return toInstant().toEpochMilli();
 	}
 
 	@Override

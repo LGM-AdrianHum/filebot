@@ -1,12 +1,12 @@
 package net.filebot;
 
-import static java.util.Arrays.*;
+import static java.util.stream.Collectors.*;
 
 import java.awt.Image;
 import java.awt.Toolkit;
 import java.net.URL;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import javax.swing.Icon;
 import javax.swing.ImageIcon;
@@ -48,20 +48,20 @@ public final class ResourceManager {
 		return icon;
 	}
 
-	public static List<Image> getApplicationIcons() {
-		return getApplicationIconURLs().stream().map(ResourceManager::getImage).collect(Collectors.toList());
+	public static Stream<URL> getApplicationIconResources() {
+		return Stream.of("window.icon.large", "window.icon.medium", "window.icon.small").map(ResourceManager::getImageResource);
 	}
 
-	public static List<URL> getApplicationIconURLs() {
-		URL[] images = new URL[3];
-		images[0] = ResourceManager.getImageResource("window.icon.small");
-		images[1] = ResourceManager.getImageResource("window.icon.medium");
-		images[2] = ResourceManager.getImageResource("window.icon.large");
-		return asList(images);
+	public static List<Image> getApplicationIcons() {
+		return getApplicationIconResources().map(ResourceManager::getImage).collect(toList());
 	}
 
 	public static Icon getFlagIcon(String languageCode) {
 		return getIcon("flags/" + languageCode);
+	}
+
+	public static Image getImage(String name) {
+		return getImage(getImageResource(name));
 	}
 
 	private static Image getImage(URL resource) {

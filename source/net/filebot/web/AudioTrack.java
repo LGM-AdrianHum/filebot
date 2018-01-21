@@ -12,6 +12,7 @@ public class AudioTrack implements Serializable {
 
 	protected String albumArtist;
 	protected String trackTitle;
+	protected String genre;
 	protected SimpleDate albumReleaseDate;
 	protected Integer mediumIndex;
 	protected Integer mediumCount;
@@ -20,7 +21,8 @@ public class AudioTrack implements Serializable {
 
 	protected String mbid; // MusicBrainz Identifier
 
-	protected AudioTrack() {
+	public AudioTrack() {
+		// used by deserializer
 	}
 
 	public AudioTrack(AudioTrack other) {
@@ -29,6 +31,7 @@ public class AudioTrack implements Serializable {
 		this.album = other.album;
 		this.albumArtist = other.albumArtist;
 		this.trackTitle = other.trackTitle;
+		this.genre = other.genre;
 		this.albumReleaseDate = other.albumReleaseDate;
 		this.mediumIndex = other.mediumIndex;
 		this.mediumCount = other.mediumCount;
@@ -45,12 +48,13 @@ public class AudioTrack implements Serializable {
 		this.database = database;
 	}
 
-	public AudioTrack(String artist, String title, String album, String albumArtist, String trackTitle, SimpleDate albumReleaseDate, Integer mediumIndex, Integer mediumCount, Integer trackIndex, Integer trackCount, String mbid, String database) {
+	public AudioTrack(String artist, String title, String album, String albumArtist, String trackTitle, String genre, SimpleDate albumReleaseDate, Integer mediumIndex, Integer mediumCount, Integer trackIndex, Integer trackCount, String mbid, String database) {
 		this.artist = artist;
 		this.title = title;
 		this.album = album;
 		this.albumArtist = albumArtist;
 		this.trackTitle = trackTitle;
+		this.genre = genre;
 		this.albumReleaseDate = albumReleaseDate;
 		this.mediumIndex = mediumIndex;
 		this.mediumCount = mediumCount;
@@ -78,6 +82,10 @@ public class AudioTrack implements Serializable {
 
 	public String getTrackTitle() {
 		return trackTitle;
+	}
+
+	public String getGenre() {
+		return genre;
 	}
 
 	public SimpleDate getAlbumReleaseDate() {

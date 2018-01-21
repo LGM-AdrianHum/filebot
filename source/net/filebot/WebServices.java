@@ -8,16 +8,20 @@ import static net.filebot.Settings.*;
 import static net.filebot.media.MediaDetection.*;
 import static net.filebot.util.FileUtilities.*;
 
-import java.util.Collection;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.logging.Level;
+import java.util.stream.Stream;
 
 import net.filebot.media.XattrMetaInfoProvider;
 import net.filebot.similarity.MetricAvg;
+import net.filebot.util.SystemProperty;
 import net.filebot.web.AcoustIDClient;
 import net.filebot.web.AnidbClient;
 import net.filebot.web.Datasource;
@@ -25,6 +29,7 @@ import net.filebot.web.EpisodeListProvider;
 import net.filebot.web.FanartTVClient;
 import net.filebot.web.ID3Lookup;
 import net.filebot.web.LocalSearch;
+import net.filebot.web.Movie;
 import net.filebot.web.MovieIdentificationService;
 import net.filebot.web.MusicIdentificationService;
 import net.filebot.web.OMDbClient;
@@ -38,7 +43,6 @@ import net.filebot.web.TMDbTVClient;
 import net.filebot.web.TVMazeClient;
 import net.filebot.web.TheTVDBClient;
 import net.filebot.web.VideoHashSubtitleService;
-import one.util.streamex.StreamEx;
 
 /**
  * Reuse the same web service client so login, cache, etc. can be shared.
@@ -46,8 +50,8 @@ import one.util.streamex.StreamEx;
 public final class WebServices {
 
 	// movie sources
-	public static final OMDbClient OMDb = new OMDbClient();
-	public static final TMDbClient TheMovieDB = new TMDbClient(getApiKey("themoviedb"));
+	public static final OMDbClient OMDb = new OMDbClient(getApiKey("omdb"));
+	public static final TMDbClient TheMovieDB = new TMDbClientWithLocalSearch(getApiKey("themoviedb"), SystemProperty.of("net.filebot.WebServices.TheMovieDB.adult", Boolean::parseBoolean, false).get());
 
 	// episode sources
 	public static final TVMazeClient TVmaze = new TVMazeClient();
@@ -67,27 +71,37 @@ public final class WebServices {
 	public static final XattrMetaInfoProvider XattrMetaData = new XattrMetaInfoProvider();
 	public static final ID3Lookup MediaInfoID3 = new ID3Lookup();
 
-	public static EpisodeListProvider[] getEpisodeListProviders() {
-		return new EpisodeListProvider[] { TheTVDB, AniDB, TheMovieDB_TV, TVmaze };
+	public static Datasource[] getServices() {
+		return new Datasource[] { TheMovieDB, OMDb, TheTVDB, AniDB, TheMovieDB_TV, TVmaze, AcoustID, MediaInfoID3, XattrMetaData, OpenSubtitles, Shooter, FanartTV };
 	}
 
 	public static MovieIdentificationService[] getMovieIdentificationServices() {
 		return new MovieIdentificationService[] { TheMovieDB, OMDb };
 	}
 
-	public static SubtitleProvider[] getSubtitleProviders() {
-		return new SubtitleProvider[] { OpenSubtitles };
-	}
-
-	public static VideoHashSubtitleService[] getVideoHashSubtitleServices(Locale locale) {
-		if (locale.equals(Locale.CHINESE))
-			return new VideoHashSubtitleService[] { OpenSubtitles, Shooter };
-		else
-			return new VideoHashSubtitleService[] { OpenSubtitles };
+	public static EpisodeListProvider[] getEpisodeListProviders() {
+		return new EpisodeListProvider[] { TheTVDB, AniDB, TheMovieDB_TV, TVmaze };
 	}
 
 	public static MusicIdentificationService[] getMusicIdentificationServices() {
 		return new MusicIdentificationService[] { AcoustID, MediaInfoID3 };
+	}
+
+	public static SubtitleProvider[] getSubtitleProviders(Locale locale) {
+		return new SubtitleProvider[] { OpenSubtitles };
+	}
+
+	public static VideoHashSubtitleService[] getVideoHashSubtitleServices(Locale locale) {
+		switch (locale.getLanguage()) {
+		case "zh":
+			return new VideoHashSubtitleService[] { OpenSubtitles, Shooter }; // special support for 射手网 for Chinese language subtitles
+		default:
+			return new VideoHashSubtitleService[] { OpenSubtitles };
+		}
+	}
+
+	public static Datasource getService(String name) {
+		return getService(name, getServices());
 	}
 
 	public static EpisodeListProvider getEpisodeListProvider(String name) {
@@ -102,11 +116,52 @@ public final class WebServices {
 		return getService(name, getMusicIdentificationServices());
 	}
 
-	private static <T extends Datasource> T getService(String name, T[] services) {
-		return StreamEx.of(services).findFirst(it -> it.getIdentifier().equalsIgnoreCase(name) || it.getName().equalsIgnoreCase(name)).orElse(null);
+	public static <T extends Datasource> T getService(String name, T... services) {
+		return stream(services).filter(it -> {
+			return it.getIdentifier().equalsIgnoreCase(name);
+		}).findFirst().orElse(null);
 	}
 
 	public static final ExecutorService requestThreadPool = Executors.newCachedThreadPool();
+
+	public static class TMDbClientWithLocalSearch extends TMDbClient {
+
+		public TMDbClientWithLocalSearch(String apikey, boolean adult) {
+			super(apikey, adult);
+		}
+
+		// local TheMovieDB search index
+		private Map<Integer, Resource<LocalSearch<Movie>>> localIndexPerYear = synchronizedMap(new HashMap<>());
+
+		private Resource<LocalSearch<Movie>> getLocalIndex(int year) {
+			return Resource.lazy(() -> {
+				if (year > 0) {
+					// limit search index to a given year (so we don't have to check all movies of all time all the time)
+					Movie[] movies = stream(releaseInfo.getMovieList()).filter(m -> year == m.getYear()).toArray(Movie[]::new);
+
+					// search by primary movie name and all known alias names
+					return new LocalSearch<>(movies, Movie::getEffectiveNamesWithoutYear);
+				}
+
+				// check all movies of all time if release year is not known (but only compare to primary title for performance reasons)
+				return new LocalSearch<>(releaseInfo.getMovieList(), m -> singleton(m.getName()));
+			});
+		}
+
+		@Override
+		public List<Movie> searchMovie(String movieName, int movieYear, Locale locale, boolean extendedInfo) throws Exception {
+			// run local search and API search in parallel
+			Future<List<Movie>> apiSearch = requestThreadPool.submit(() -> TMDbClientWithLocalSearch.super.searchMovie(movieName, movieYear, locale, extendedInfo));
+
+			// the year might be off by 1 so we also check movies from the previous year and the next year
+			Future<List<Movie>> localSearch1 = requestThreadPool.submit(() -> localIndexPerYear.computeIfAbsent(movieYear, this::getLocalIndex).get().search(movieName));
+			Future<List<Movie>> localSearch2 = requestThreadPool.submit(() -> localIndexPerYear.computeIfAbsent(movieYear - 1, this::getLocalIndex).get().search(movieName));
+			Future<List<Movie>> localSearch3 = requestThreadPool.submit(() -> localIndexPerYear.computeIfAbsent(movieYear + 1, this::getLocalIndex).get().search(movieName));
+
+			// combine alias names into a single search results, and keep API search name as primary name
+			return Stream.of(apiSearch.get(), localSearch1.get(), localSearch2.get(), localSearch3.get()).flatMap(List::stream).distinct().collect(toList());
+		}
+	}
 
 	public static class TheTVDBClientWithLocalSearch extends TheTVDBClient {
 
@@ -115,27 +170,26 @@ public final class WebServices {
 		}
 
 		// local TheTVDB search index
-		private final Resource<LocalSearch<SearchResult>> localIndex = Resource.lazy(() -> {
-			return new LocalSearch<SearchResult>(releaseInfo.getTheTVDBIndex(), SearchResult::getEffectiveNames);
-		}).memoize();
+		private final Resource<LocalSearch<SearchResult>> localIndex = Resource.lazy(() -> new LocalSearch<SearchResult>(releaseInfo.getTheTVDBIndex(), SearchResult::getEffectiveNames));
 
 		private SearchResult merge(SearchResult prime, List<SearchResult> group) {
 			int id = prime.getId();
 			String name = prime.getName();
-			String[] aliasNames = StreamEx.of(group).flatMap(it -> stream(it.getAliasNames())).remove(name::equals).distinct().toArray(String[]::new);
+
+			String[] aliasNames = group.stream().flatMap(it -> stream(it.getAliasNames())).filter(n -> !n.equals(name)).distinct().toArray(String[]::new);
 			return new SearchResult(id, name, aliasNames);
 		}
 
 		@Override
-		public List<SearchResult> fetchSearchResult(final String query, final Locale locale) throws Exception {
+		public List<SearchResult> fetchSearchResult(String query, Locale locale) throws Exception {
 			// run local search and API search in parallel
 			Future<List<SearchResult>> apiSearch = requestThreadPool.submit(() -> TheTVDBClientWithLocalSearch.super.fetchSearchResult(query, locale));
 			Future<List<SearchResult>> localSearch = requestThreadPool.submit(() -> localIndex.get().search(query));
 
 			// combine alias names into a single search results, and keep API search name as primary name
-			Collection<SearchResult> result = StreamEx.of(apiSearch.get()).append(localSearch.get()).groupingBy(SearchResult::getId, collectingAndThen(toList(), group -> merge(group.get(0), group))).values();
+			Map<Integer, SearchResult> results = Stream.of(apiSearch.get(), localSearch.get()).flatMap(List::stream).collect(groupingBy(SearchResult::getId, LinkedHashMap::new, collectingAndThen(toList(), group -> merge(group.get(0), group))));
 
-			return sortBySimilarity(result, singleton(query), getSeriesMatchMetric());
+			return sortBySimilarity(results.values(), singleton(query), getSeriesMatchMetric());
 		}
 	}
 
@@ -158,9 +212,7 @@ public final class WebServices {
 		}
 
 		// local OpenSubtitles search index
-		private final Resource<LocalSearch<SubtitleSearchResult>> localIndex = Resource.lazy(() -> {
-			return new LocalSearch<SubtitleSearchResult>(releaseInfo.getOpenSubtitlesIndex(), SearchResult::getEffectiveNames);
-		}).memoize();
+		private final Resource<LocalSearch<SubtitleSearchResult>> localIndex = Resource.lazy(() -> new LocalSearch<SubtitleSearchResult>(releaseInfo.getOpenSubtitlesIndex(), SearchResult::getEffectiveNames));
 
 		@Override
 		public List<SubtitleSearchResult> search(final String query) throws Exception {

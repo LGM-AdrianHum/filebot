@@ -30,8 +30,9 @@ public class ExpressionBindings extends AbstractMap<String, Object> implements B
 				for (String name : define.value()) {
 					Method existingBinding = bindings.put(name, method);
 
-					if (existingBinding != null)
+					if (existingBinding != null) {
 						throw new IllegalArgumentException(String.format("Illegal binding {%s} on %s", name, method.getName()));
+					}
 				}
 			}
 		}
@@ -41,10 +42,7 @@ public class ExpressionBindings extends AbstractMap<String, Object> implements B
 	}
 
 	protected boolean isUndefined(Object value) {
-		if (value instanceof CharSequence) {
-			return ((CharSequence) value).length() <= 0;
-		}
-		return value == null;
+		return value == null || ExpressionFormatFunctions.isEmptyValue(value);
 	}
 
 	public Object getBindingBean() {
@@ -69,7 +67,7 @@ public class ExpressionBindings extends AbstractMap<String, Object> implements B
 				if (e.getCause() instanceof BindingException) {
 					throw (BindingException) e.getCause();
 				}
-				throw new BindingException(key.toString(), getRootCauseMessage(e), e);
+				throw new BindingException(key, getRootCauseMessage(e), e);
 			}
 		}
 		return null;

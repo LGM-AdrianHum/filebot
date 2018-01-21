@@ -4,9 +4,11 @@
 
 package net.filebot.util.ui.notification;
 
+import static net.filebot.util.ui.SwingUI.*;
 
 import java.awt.BorderLayout;
 import java.awt.Color;
+import java.awt.Cursor;
 import java.awt.Font;
 import java.awt.Window;
 
@@ -19,13 +21,11 @@ import javax.swing.JTextPane;
 import javax.swing.SwingConstants;
 import javax.swing.border.Border;
 
-
 public class MessageNotification extends NotificationWindow {
 
 	public MessageNotification(String head, String text, Icon icon, int timeout) {
 		this((Window) null, head, text, icon, timeout);
 	}
-
 
 	public MessageNotification(String head, String text, Icon icon) {
 		this(head, text, icon, -1);
@@ -38,7 +38,6 @@ public class MessageNotification extends NotificationWindow {
 	private JLabel headLabel;
 	private JTextPane textArea;
 	private JLabel imageLabel;
-
 
 	public MessageNotification(Window owner, String head, String text, Icon icon, int timeout) {
 		super(owner, timeout);
@@ -70,8 +69,11 @@ public class MessageNotification extends NotificationWindow {
 		}
 
 		c.add(textPanel, BorderLayout.CENTER);
-
 		pack();
+
+		// copy message to clipboard
+		getGlassPane().setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+		getGlassPane().addMouseListener(mouseClicked(evt -> copyToClipboard(text)));
 	}
 
 }

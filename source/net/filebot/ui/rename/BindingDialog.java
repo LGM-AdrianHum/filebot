@@ -1,10 +1,11 @@
 package net.filebot.ui.rename;
 
-import static java.util.stream.Collectors.*;
+import static java.util.Arrays.*;
 import static net.filebot.Logging.*;
 import static net.filebot.MediaTypes.*;
 import static net.filebot.UserFiles.*;
 import static net.filebot.media.XattrMetaInfo.*;
+import static net.filebot.util.JsonUtilities.*;
 import static net.filebot.util.RegularExpressions.*;
 import static net.filebot.util.ui.SwingUI.*;
 
@@ -12,8 +13,6 @@ import java.awt.Color;
 import java.awt.Component;
 import java.awt.Window;
 import java.awt.event.ActionEvent;
-import java.awt.event.WindowAdapter;
-import java.awt.event.WindowEvent;
 import java.io.File;
 import java.text.Format;
 import java.util.ArrayList;
@@ -32,7 +31,6 @@ import java.util.logging.Level;
 import javax.script.ScriptException;
 import javax.swing.AbstractAction;
 import javax.swing.Action;
-import javax.swing.JButton;
 import javax.swing.JComponent;
 import javax.swing.JDialog;
 import javax.swing.JLabel;
@@ -44,8 +42,6 @@ import javax.swing.JTextField;
 import javax.swing.ListSelectionModel;
 import javax.swing.RowFilter;
 import javax.swing.SwingWorker;
-import javax.swing.event.DocumentEvent;
-import javax.swing.event.DocumentListener;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.TableModel;
@@ -58,7 +54,6 @@ import net.filebot.mediainfo.MediaInfo;
 import net.filebot.mediainfo.MediaInfo.StreamKind;
 import net.filebot.util.DefaultThreadFactory;
 import net.filebot.util.FileUtilities.ExtensionFileFilter;
-import net.filebot.util.ui.LazyDocumentListener;
 import net.miginfocom.swing.MigLayout;
 
 class BindingDialog extends JDialog {
@@ -69,6 +64,8 @@ class BindingDialog extends JDialog {
 	private final Format infoObjectFormat;
 	private final BindingTableModel bindingModel = new BindingTableModel();
 
+	private MediaBindingBean sample = null;
+
 	private boolean submit = false;
 
 	public BindingDialog(Window owner, String title, Format infoObjectFormat, boolean editable) {
@@ -76,7 +73,7 @@ class BindingDialog extends JDialog {
 		this.infoObjectFormat = infoObjectFormat;
 
 		JComponent root = (JComponent) getContentPane();
-		root.setLayout(new MigLayout("nogrid, fill, insets dialog"));
+		root.setLayout(new MigLayout("nogrid, novisualpadding, fill, insets dialog", "", "[pref!]paragraph[pref!]2px[grow,fill]paragraph[pref!]"));
 
 		// decorative tabbed pane
 		JTabbedPane inputContainer = new JTabbedPane();
@@ -85,7 +82,7 @@ class BindingDialog extends JDialog {
 		JPanel inputPanel = new JPanel(new MigLayout("nogrid, fill"));
 		inputPanel.setOpaque(false);
 
-		inputPanel.add(new JLabel("Name:"), "wrap 2px");
+		inputPanel.add(new JLabel("Info Object:"), "wrap 2px");
 		inputPanel.add(infoTextField, "hmin 20px, growx, wrap paragraph");
 
 		inputPanel.add(new JLabel("Media File:"), "wrap 2px");
@@ -93,70 +90,27 @@ class BindingDialog extends JDialog {
 		inputPanel.add(createImageButton(mediaInfoAction), "gap rel, w 28px!, h 28px!");
 		inputPanel.add(createImageButton(selectFileAction), "gap rel, w 28px!, h 28px!, wrap paragraph");
 		inputContainer.add("Bindings", inputPanel);
-		root.add(inputContainer, "growx, wrap paragraph");
 
-		root.add(new JLabel("Preview:"), "gap 5px, wrap 2px");
-		root.add(new JScrollPane(createBindingTable(bindingModel)), "growx, wrap paragraph:push");
+		root.add(inputContainer, "growx, wrap");
+		root.add(new JLabel("Preview:"), "gap 5px, wrap");
+		root.add(new JScrollPane(createBindingTable(bindingModel)), "grow, growprio 200, wrap");
 
 		if (editable) {
-			root.add(new JButton(approveAction), "tag apply");
-			root.add(new JButton(cancelAction), "tag cancel");
+			root.add(newButton("Use Bindings", ResourceManager.getIcon("dialog.continue"), evt -> finish(true)), "tag apply");
+			root.add(newButton("Cancel", ResourceManager.getIcon("dialog.cancel"), evt -> finish(false)), "tag cancel");
 		} else {
-			root.add(new JButton(okAction), "tag apply");
+			root.add(newButton("Close", ResourceManager.getIcon("dialog.continue"), e -> finish(false)), "tag ok");
 		}
 
-		// update preview on change
-		DocumentListener changeListener = new LazyDocumentListener(1000) {
-
-			@Override
-			public void update(DocumentEvent evt) {
-				// ignore lazy events that come in after the window has been closed
-				if (bindingModel.executor.isShutdown())
-					return;
-
-				bindingModel.setModel(getSampleExpressions(), new MediaBindingBean(getInfoObject(), getMediaFile()));
-			}
-		};
-
-		// update example bindings on change
-		infoTextField.getDocument().addDocumentListener(changeListener);
-		mediaFileTextField.getDocument().addDocumentListener(changeListener);
-
 		// disabled by default
-		infoTextField.setEnabled(false);
+		infoTextField.setEditable(false);
+		mediaFileTextField.setEditable(false);
+
 		mediaInfoAction.setEnabled(false);
-
-		// disable media info action if media file is invalid
-		mediaFileTextField.getDocument().addDocumentListener(new DocumentListener() {
-
-			@Override
-			public void changedUpdate(DocumentEvent e) {
-				mediaInfoAction.setEnabled(getMediaFile() != null && getMediaFile().isFile());
-			}
-
-			@Override
-			public void removeUpdate(DocumentEvent e) {
-				changedUpdate(e);
-			}
-
-			@Override
-			public void insertUpdate(DocumentEvent e) {
-				changedUpdate(e);
-			}
-		});
+		selectFileAction.setEnabled(editable);
 
 		// finish dialog and close window manually
-		addWindowListener(new WindowAdapter() {
-
-			@Override
-			public void windowClosing(WindowEvent e) {
-				finish(false);
-			}
-		});
-
-		mediaFileTextField.setEditable(editable);
-		infoTextField.setEditable(editable);
-		selectFileAction.setEnabled(editable);
+		addWindowListener(windowClosed(evt -> finish(false)));
 
 		// initialize window properties
 		setDefaultCloseOperation(DO_NOTHING_ON_CLOSE);
@@ -176,7 +130,6 @@ class BindingDialog extends JDialog {
 			public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
 				super.getTableCellRendererComponent(table, null, isSelected, hasFocus, row, column);
 
-				@SuppressWarnings("unchecked")
 				Future<String> future = (Future<String>) value;
 
 				// reset state
@@ -210,86 +163,68 @@ class BindingDialog extends JDialog {
 		return table;
 	}
 
-	private List<String> getSampleExpressions() {
-		String expressions = ResourceBundle.getBundle(getClass().getName()).getString("expressions");
-		return COMMA.splitAsStream(expressions).collect(toList());
-	}
-
 	public boolean submit() {
 		return submit;
 	}
 
 	private void finish(boolean submit) {
-		this.submit = submit;
-
 		// cancel background evaluators
-		bindingModel.executor.shutdownNow();
+		this.submit = submit;
+		this.bindingModel.executor.shutdownNow();
 
 		setVisible(false);
 		dispose();
 	}
 
-	public void setInfoObject(Object info) {
-		infoTextField.putClientProperty("model", info);
-		infoTextField.setText(info == null ? "" : infoObjectFormat.format(info));
+	public void setSample(MediaBindingBean sample) {
+		this.sample = sample;
+
+		Object i = getInfoObject();
+		if (i != null) {
+			infoTextField.setText(infoObjectFormat.format(i));
+			infoTextField.setToolTipText("<html><pre>" + escapeHTML(json(i, true)) + "</pre></html>");
+			infoTextField.setEnabled(true);
+		} else {
+			infoTextField.setText("none");
+			infoTextField.setToolTipText("null");
+			infoTextField.setEnabled(false);
+		}
+
+		File f = getMediaFile();
+		if (f != null) {
+			mediaFileTextField.setText(f.getPath());
+			mediaFileTextField.setEnabled(true);
+			mediaInfoAction.setEnabled(true);
+		} else {
+			mediaFileTextField.setText("none");
+			mediaFileTextField.setEnabled(false);
+			mediaInfoAction.setEnabled(false);
+		}
+
+		updatePreviewModel();
 	}
 
-	public void setMediaFile(File mediaFile) {
-		mediaFileTextField.setText(mediaFile == null ? "" : mediaFile.getAbsolutePath());
+	public MediaBindingBean getSample() {
+		return sample;
 	}
 
 	public Object getInfoObject() {
-		return infoTextField.getClientProperty("model");
+		return sample == null ? null : sample.getInfoObject();
 	}
 
 	public File getMediaFile() {
-		File file = new File(mediaFileTextField.getText());
-
-		// allow only absolute paths
-		return file.isAbsolute() ? file : null;
+		return sample == null ? null : sample.getFileObject();
 	}
 
-	protected final Action hideAction = new AbstractAction("Cancel", ResourceManager.getIcon("dialog.cancel")) {
-
-		@Override
-		public void actionPerformed(ActionEvent evt) {
-			finish(true);
+	private void updatePreviewModel() {
+		// ignore lazy events that come in after the window has been closed
+		if (sample == null || bindingModel.executor.isShutdown()) {
+			return;
 		}
-	};
 
-	protected final Action approveAction = new AbstractAction("Use Bindings", ResourceManager.getIcon("dialog.continue")) {
-
-		@Override
-		public void actionPerformed(ActionEvent evt) {
-			// check episode and media file
-			if (getInfoObject() == null) {
-				// illegal episode string
-				log.warning(format("Failed to parse episode: '%s'", infoTextField.getText()));
-			} else if (getMediaFile() == null && !mediaFileTextField.getText().isEmpty()) {
-				// illegal file path
-				log.warning(format("Invalid media file: '%s'", mediaFileTextField.getText()));
-			} else {
-				// everything seems to be in order
-				finish(true);
-			}
-		}
-	};
-
-	protected final Action okAction = new AbstractAction("OK") {
-
-		@Override
-		public void actionPerformed(ActionEvent evt) {
-			finish(true);
-		}
-	};
-
-	protected final Action cancelAction = new AbstractAction("Cancel", ResourceManager.getIcon("dialog.cancel")) {
-
-		@Override
-		public void actionPerformed(ActionEvent evt) {
-			finish(false);
-		}
-	};
+		String[] expressions = COMMA.split(ResourceBundle.getBundle(getClass().getName()).getString("expressions"));
+		bindingModel.setModel(asList(expressions), sample);
+	}
 
 	protected final Action mediaInfoAction = new AbstractAction("Open MediaInfo", ResourceManager.getIcon("action.properties")) {
 
@@ -343,21 +278,12 @@ class BindingDialog extends JDialog {
 			}
 
 			// show media info dialog
-			final JDialog dialog = new JDialog(getWindow(evt.getSource()), "MediaInfo", ModalityType.DOCUMENT_MODAL);
-
-			Action closeAction = new AbstractAction("OK") {
-
-				@Override
-				public void actionPerformed(ActionEvent e) {
-					dialog.setVisible(false);
-					dialog.dispose();
-				}
-			};
+			JDialog dialog = new JDialog(getWindow(evt.getSource()), "MediaInfo", ModalityType.DOCUMENT_MODAL);
 
 			JComponent c = (JComponent) dialog.getContentPane();
-			c.setLayout(new MigLayout("fill", "[align center]", "[fill][pref!]"));
+			c.setLayout(new MigLayout("fill, novisualpadding", "[align center]", "[fill][pref!]"));
 			c.add(tabbedPane, "grow, wrap");
-			c.add(new JButton(closeAction), "wmin 80px, hmin 25px");
+			c.add(newButton("OK", e -> dialog.setVisible(false)), "w 80px!, h 25px!");
 
 			dialog.pack();
 			dialog.setLocationRelativeTo(BindingDialog.this);
@@ -371,18 +297,19 @@ class BindingDialog extends JDialog {
 
 		@Override
 		public void actionPerformed(ActionEvent evt) {
-			ExtensionFileFilter mediaFiles = combineFilter(VIDEO_FILES, AUDIO_FILES, SUBTITLE_FILES);
-			List<File> file = showLoadDialogSelectFiles(false, false, getMediaFile(), mediaFiles, (String) getValue(NAME), evt);
+			ExtensionFileFilter mediaFiles = ExtensionFileFilter.union(VIDEO_FILES, AUDIO_FILES, SUBTITLE_FILES, IMAGE_FILES);
+			List<File> selection = showLoadDialogSelectFiles(false, false, getMediaFile(), mediaFiles, (String) getValue(NAME), evt);
 
-			if (file.size() > 0) {
+			if (selection.size() > 0) {
 				// update text field
-				mediaFileTextField.setText(file.get(0).getAbsolutePath());
+				File file = selection.get(0).getAbsoluteFile();
+				Object info = xattr.getMetaInfo(file);
 
-				// set info object from xattr if possible
-				Object object = xattr.getMetaInfo(file.get(0));
-				if (object != null && infoObjectFormat.format(object) != null) {
-					setInfoObject(object);
+				if (info == null || infoObjectFormat.format(info) == null) {
+					info = getInfoObject();
 				}
+
+				setSample(new MediaBindingBean(info, file));
 			}
 		}
 	};
@@ -413,14 +340,7 @@ class BindingDialog extends JDialog {
 			};
 
 			// evaluate expression with given bindings
-			String value = format.format(bindingBean);
-
-			// check for script exceptions
-			if (format.caughtScriptException() != null) {
-				throw format.caughtScriptException();
-			}
-
-			return value;
+			return format.format(bindingBean);
 		}
 
 		@Override
@@ -437,7 +357,7 @@ class BindingDialog extends JDialog {
 
 		private final List<Evaluator> model = new ArrayList<Evaluator>();
 
-		private final ExecutorService executor = Executors.newFixedThreadPool(2, new DefaultThreadFactory("Evaluator", Thread.MIN_PRIORITY));
+		private final ExecutorService executor = Executors.newFixedThreadPool(1, new DefaultThreadFactory("Evaluator", Thread.MIN_PRIORITY));
 
 		public void setModel(Collection<String> expressions, Object bindingBean) {
 			// cancel old workers and clear model

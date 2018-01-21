@@ -1,5 +1,6 @@
 package net.filebot.cli;
 
+import static net.filebot.Logging.*;
 import static net.filebot.util.ui.SwingUI.*;
 
 import java.awt.BorderLayout;
@@ -15,6 +16,8 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.io.UnsupportedEncodingException;
 import java.util.HashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 import javax.script.Bindings;
 import javax.script.ScriptException;
@@ -27,7 +30,6 @@ import javax.swing.JToolBar;
 import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
-import javax.swing.text.BadLocationException;
 import javax.swing.text.JTextComponent;
 
 import org.fife.ui.rsyntaxtextarea.FileLocation;
@@ -35,12 +37,14 @@ import org.fife.ui.rsyntaxtextarea.SyntaxConstants;
 import org.fife.ui.rsyntaxtextarea.TextEditorPane;
 import org.fife.ui.rtextarea.RTextScrollPane;
 
+import net.filebot.ApplicationFolder;
 import net.filebot.ResourceManager;
 import net.filebot.Settings;
-import net.filebot.Settings.ApplicationFolder;
 import net.filebot.util.TeePrintStream;
 
 public class GroovyPad extends JFrame {
+
+	public static final String DEFAULT_SCRIPT = "runScript 'sysinfo'";
 
 	public GroovyPad() throws IOException {
 		super("Groovy Pad");
@@ -56,6 +60,8 @@ public class GroovyPad extends JFrame {
 		tools.setFloatable(true);
 		tools.add(run);
 		tools.add(cancel);
+		tools.addSeparator();
+		tools.add(newAction(DEFAULT_SCRIPT, ResourceManager.getIcon("status.info"), evt -> runScript(DEFAULT_SCRIPT)));
 		c.add(tools, BorderLayout.NORTH);
 
 		run.setEnabled(true);
@@ -89,15 +95,14 @@ public class GroovyPad extends JFrame {
 		setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
 		setLocationByPlatform(true);
 		setSize(800, 600);
-
 	}
 
 	protected MessageConsole console;
 	protected TextEditorPane editor;
 	protected TextEditorPane output;
 
-	protected JComponent createEditor() throws IOException {
-		editor = new TextEditorPane(TextEditorPane.INSERT_MODE, false, getFileLocation("pad.groovy"), "UTF-8");
+	protected JComponent createEditor() {
+		editor = new TextEditorPane(TextEditorPane.INSERT_MODE, false);
 		editor.setSyntaxEditingStyle(SyntaxConstants.SYNTAX_STYLE_GROOVY);
 		editor.setAutoscrolls(false);
 		editor.setAnimateBracketMatching(false);
@@ -111,8 +116,19 @@ public class GroovyPad extends JFrame {
 		editor.setRoundedSelectionEdges(false);
 		editor.setTabsEmulated(false);
 
-		// restore on open
-		editor.reload();
+		try {
+			// use this default value so people can easily submit bug reports with fn:sysinfo logs
+			File pad = ApplicationFolder.AppData.resolve("pad.groovy");
+
+			if (!pad.exists()) {
+				ScriptShellMethods.saveAs(DEFAULT_SCRIPT, pad);
+			}
+
+			// restore on open
+			editor.load(FileLocation.create(pad), "UTF-8");
+		} catch (Exception e) {
+			debug.log(Level.WARNING, e, e::toString);
+		}
 
 		return new RTextScrollPane(editor, true);
 	}
@@ -140,20 +156,11 @@ public class GroovyPad extends JFrame {
 		return new RTextScrollPane(output, true);
 	}
 
-	protected FileLocation getFileLocation(String name) throws IOException {
-		File pad = ApplicationFolder.AppData.resolve(name);
-		if (!pad.exists()) {
-			// use this default value so people can easily submit bug reports with fn:sysinfo logs
-			ScriptShellMethods.saveAs("runScript 'sysinfo'", pad);
-		}
-		return FileLocation.create(pad);
-	}
-
 	protected final ScriptShell shell;
 
 	protected ScriptShell createScriptShell() {
 		try {
-			return new ScriptShell(s -> ScriptSource.GITHUB_STABLE.getScriptProvider(s).getScript(s), new HashMap<String, Object>());
+			return new ScriptShell(s -> ScriptSource.GITHUB_STABLE.getScriptProvider(s).getScript(s), new CmdlineOperations(), new HashMap<String, Object>());
 		} catch (Exception e) {
 			throw new RuntimeException(e);
 		}
@@ -164,17 +171,19 @@ public class GroovyPad extends JFrame {
 
 	private Runner currentRunner = null;
 
-	protected void runScript(ActionEvent evt) {
-		// persist script file and clear output
+	public void runScript(ActionEvent evt) {
 		try {
 			editor.save();
 		} catch (IOException e) {
-			// won't happen
+			debug.log(Level.WARNING, e, e::toString);
 		}
-		output.setText("");
 
+		runScript(editor.getText());
+	}
+
+	public void runScript(String script) {
 		if (currentRunner == null || currentRunner.isDone()) {
-			currentRunner = new Runner(editor.getText()) {
+			currentRunner = new Runner(script) {
 
 				@Override
 				protected void done() {
@@ -185,32 +194,23 @@ public class GroovyPad extends JFrame {
 
 			run.setEnabled(false);
 			cancel.setEnabled(true);
+			output.setText(null);
+
 			currentRunner.execute();
 		}
 	}
 
+	@SuppressWarnings("deprecation")
 	protected void cancelScript(ActionEvent evt) {
-		// persist script file and clear output
-		try {
-			editor.save();
-		} catch (IOException e) {
-			// won't happen
-		}
-		output.setText("");
+		if (currentRunner != null && !currentRunner.isDone()) {
+			currentRunner.cancel(true);
+			currentRunner.getExecutionThread().stop();
 
-		if (currentRunner == null || currentRunner.isDone()) {
-			currentRunner = new Runner(editor.getText()) {
-
-				@Override
-				protected void done() {
-					run.setEnabled(true);
-					cancel.setEnabled(false);
-				}
-			};
-
-			run.setEnabled(false);
-			cancel.setEnabled(true);
-			currentRunner.execute();
+			try {
+				currentRunner.get(2, TimeUnit.SECONDS);
+			} catch (Exception e) {
+				debug.log(Level.WARNING, e, e::getMessage);
+			}
 		}
 	}
 
@@ -226,7 +226,7 @@ public class GroovyPad extends JFrame {
 				public void run() {
 					try {
 						Bindings bindings = new SimpleBindings();
-						bindings.put(ScriptShell.SHELL_ARGV_BINDING_NAME, Settings.getApplicationArguments().getArray());
+						bindings.put(ScriptShell.SHELL_ARGS_BINDING_NAME, Settings.getApplicationArguments());
 						bindings.put(ScriptShell.ARGV_BINDING_NAME, Settings.getApplicationArguments().getFiles(false));
 
 						result = shell.evaluate(script, bindings);
@@ -282,7 +282,7 @@ public class GroovyPad extends JFrame {
 				System.setOut(new TeePrintStream(new ConsoleOutputStream(), true, "UTF-8", system_out));
 				System.setErr(new TeePrintStream(new ConsoleOutputStream(), true, "UTF-8", system_err));
 			} catch (UnsupportedEncodingException e) {
-				// can't happen
+				debug.log(Level.WARNING, e, e::getMessage);
 			}
 		}
 
@@ -298,25 +298,20 @@ public class GroovyPad extends JFrame {
 				try {
 					String message = this.toString("UTF-8");
 					reset();
-
 					commit(message);
-				} catch (UnsupportedEncodingException e) {
+				} catch (Exception e) {
 					// can't happen
 				}
 			}
 
 			private void commit(final String line) {
-				SwingUtilities.invokeLater(new Runnable() {
-
-					@Override
-					public void run() {
-						try {
-							int offset = textComponent.getDocument().getLength();
-							textComponent.getDocument().insertString(offset, line, null);
-							textComponent.setCaretPosition(textComponent.getDocument().getLength());
-						} catch (BadLocationException e) {
-							// ignore
-						}
+				SwingUtilities.invokeLater(() -> {
+					try {
+						int offset = textComponent.getDocument().getLength();
+						textComponent.getDocument().insertString(offset, line, null);
+						textComponent.setCaretPosition(textComponent.getDocument().getLength());
+					} catch (Exception e) {
+						// ignore
 					}
 				});
 			}

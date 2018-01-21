@@ -47,17 +47,17 @@ public class SelectButtonTextField<T> extends JComponent {
 
 		editor.setBorder(BorderFactory.createMatteBorder(1, 0, 1, 1, ((LineBorder) selectButton.getBorder()).getLineColor()));
 
-		setLayout(new MigLayout("nogrid, fill"));
-		add(selectButton, "h pref!, w pref!, sizegroupy this");
-		add(editor, "gap 0, w 195px!, sizegroupy this");
+		setLayout(new MigLayout("fill, nogrid, novisualpadding"));
+		add(selectButton, "h pref!, w pref!, sizegroupy editor");
+		add(editor, "gap 0, w 195px!, sizegroupy editor");
 
 		editor.setPrototypeDisplayValue("X");
 		editor.setRenderer(new CompletionCellRenderer());
 		editor.setUI(new TextFieldComboBoxUI(selectButton));
 		editor.setMaximumRowCount(10);
 
-		SwingUI.installAction(this, KeyStroke.getKeyStroke(KeyEvent.VK_UP, KeyEvent.CTRL_MASK), new SpinClientAction(-1));
-		SwingUI.installAction(this, KeyStroke.getKeyStroke(KeyEvent.VK_DOWN, KeyEvent.CTRL_MASK), new SpinClientAction(1));
+		SwingUI.installAction(this, KeyStroke.getKeyStroke(KeyEvent.VK_UP, KeyEvent.CTRL_DOWN_MASK), new SpinClientAction(-1));
+		SwingUI.installAction(this, KeyStroke.getKeyStroke(KeyEvent.VK_DOWN, KeyEvent.CTRL_DOWN_MASK), new SpinClientAction(1));
 	}
 
 	public String getText() {

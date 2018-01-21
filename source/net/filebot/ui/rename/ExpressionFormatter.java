@@ -11,26 +11,38 @@ import java.util.logging.Level;
 
 import javax.script.ScriptException;
 
-import net.filebot.Settings.ApplicationFolder;
-import net.filebot.format.ExpressionFormat;
+import net.filebot.ApplicationFolder;
+import net.filebot.format.ExpressionFileFormat;
 import net.filebot.format.MediaBindingBean;
 import net.filebot.similarity.Match;
 
 class ExpressionFormatter implements MatchFormatter {
 
 	private final String expression;
-	private ExpressionFormat format;
+	private ExpressionFileFormat format;
 
 	private Format preview;
 	private Class<?> target;
 
 	public ExpressionFormatter(String expression, Format preview, Class<?> target) {
-		if (expression == null || expression.isEmpty())
+		if (expression == null || expression.isEmpty()) {
 			throw new IllegalArgumentException("Expression must not be null or empty");
+		}
 
 		this.expression = expression;
 		this.preview = preview;
 		this.target = target;
+	}
+
+	public ExpressionFormatter(ExpressionFileFormat format, Format preview, Class<?> target) {
+		this(format.getExpression(), preview, target);
+
+		// use compiled format expression right away
+		this.format = format;
+	}
+
+	public Class<?> getTargetClass() {
+		return target;
 	}
 
 	@Override
@@ -45,20 +57,15 @@ class ExpressionFormatter implements MatchFormatter {
 	}
 
 	@Override
-	public synchronized String format(Match<?, ?> match, Map<?, ?> context) throws ScriptException {
+	public synchronized String format(Match<?, ?> match, boolean extension, Map<?, ?> context) throws ScriptException {
 		// lazy initialize script engine
 		if (format == null) {
-			format = new ExpressionFormat(expression);
+			format = new ExpressionFileFormat(expression);
 		}
 
 		// evaluate the expression using the given bindings
 		Object bindingBean = new MediaBindingBean(match.getValue(), (File) match.getCandidate(), (Map) context);
-		String destination = format.format(bindingBean).trim();
-
-		// if result is empty, check for script exceptions
-		if (destination.isEmpty() && format.caughtScriptException() != null) {
-			throw format.caughtScriptException();
-		}
+		String destination = format.format(bindingBean);
 
 		return getPath((File) match.getCandidate(), destination);
 	}

@@ -8,6 +8,7 @@ import java.awt.Color;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CancellationException;
 
 import javax.swing.BorderFactory;
 import javax.swing.JScrollPane;
@@ -16,7 +17,6 @@ import javax.swing.ListSelectionModel;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.TableModel;
 
-import net.filebot.util.FileUtilities;
 import net.filebot.util.ui.LoadingOverlayPane;
 import net.filebot.web.Episode;
 import net.filebot.web.Movie;
@@ -49,14 +49,16 @@ class AttributeTool extends Tool<TableModel> {
 	}
 
 	@Override
-	protected TableModel createModelInBackground(File root) throws InterruptedException {
+	protected TableModel createModelInBackground(List<File> root) {
 		FileAttributesTableModel model = new FileAttributesTableModel();
 
-		if (root == null) {
+		if (root.isEmpty()) {
 			return model;
 		}
 
-		for (File file : filter(FileUtilities.listFiles(root), VIDEO_FILES, SUBTITLE_FILES)) {
+		List<File> files = listFiles(root, filter(VIDEO_FILES, SUBTITLE_FILES), HUMAN_NAME_ORDER);
+
+		for (File file : files) {
 			Object metaObject = xattr.getMetaInfo(file);
 			String originalName = xattr.getOriginalName(file);
 
@@ -72,6 +74,10 @@ class AttributeTool extends Tool<TableModel> {
 				} else if (movie.getImdbId() > 0) {
 					model.addRow(String.format("%s::%d", "OMDb", movie.getImdbId()), metaObject, originalName, file);
 				}
+			}
+
+			if (Thread.interrupted()) {
+				throw new CancellationException();
 			}
 		}
 

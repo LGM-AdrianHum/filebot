@@ -1,76 +1,46 @@
 
 package net.filebot.util.ui;
 
-
-import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
+import java.util.function.Consumer;
 
 import javax.swing.Timer;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 
-
-public abstract class LazyDocumentListener implements DocumentListener {
-
-	private DocumentEvent lastEvent;
+public class LazyDocumentListener implements DocumentListener {
 
 	private Timer timer;
 
+	private DocumentEvent lastEvent = null;
 
-	public LazyDocumentListener() {
-		this(200);
+	public LazyDocumentListener(Consumer<DocumentEvent> handler) {
+		this(200, handler);
 	}
 
-
-	public LazyDocumentListener(int delay) {
-		if (delay >= 0) {
-			timer = new Timer(delay, new ActionListener() {
-
-				@Override
-				public void actionPerformed(ActionEvent e) {
-					update(lastEvent);
-
-					// we don't need it anymore
-					lastEvent = null;
-				}
-			});
-
-			timer.setRepeats(false);
-		}
+	public LazyDocumentListener(int delay, Consumer<DocumentEvent> handler) {
+		timer = new Timer(delay, evt -> {
+			handler.accept(lastEvent);
+			lastEvent = null;
+		});
+		timer.setRepeats(false);
 	}
-
-
-	public void defer(DocumentEvent e) {
-		lastEvent = e;
-
-		if (timer != null) {
-			// defer update
-			timer.restart();
-		} else {
-			// update immediately
-			update(lastEvent);
-		}
-	}
-
 
 	@Override
-	public void changedUpdate(DocumentEvent e) {
-		defer(e);
+	public void changedUpdate(DocumentEvent evt) {
+		lastEvent = evt;
+		timer.restart();
 	}
-
 
 	@Override
-	public void insertUpdate(DocumentEvent e) {
-		defer(e);
+	public void insertUpdate(DocumentEvent evt) {
+		lastEvent = evt;
+		timer.restart();
 	}
-
 
 	@Override
-	public void removeUpdate(DocumentEvent e) {
-		defer(e);
+	public void removeUpdate(DocumentEvent evt) {
+		lastEvent = evt;
+		timer.restart();
 	}
-
-
-	public abstract void update(DocumentEvent e);
 
 }

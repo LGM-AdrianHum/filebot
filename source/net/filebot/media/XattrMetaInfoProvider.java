@@ -1,34 +1,45 @@
 package net.filebot.media;
 
-import static net.filebot.media.XattrMetaInfo.*;
-
 import java.io.File;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 import javax.swing.Icon;
 
+import net.filebot.ResourceManager;
 import net.filebot.web.Datasource;
 
 public class XattrMetaInfoProvider implements Datasource {
 
 	@Override
-	public String getName() {
+	public String getIdentifier() {
 		return "xattr";
 	}
 
 	@Override
-	public Icon getIcon() {
-		return null;
+	public String getName() {
+		return "Extended Attributes";
 	}
 
-	public Map<File, Object> getMetaData(Iterable<File> files) {
+	@Override
+	public Icon getIcon() {
+		return ResourceManager.getIcon("search.xattr");
+	}
+
+	public Map<File, Object> match(Collection<File> files, boolean strict) {
+		// enable xattr regardless of -DuseExtendedFileAttributes system properties
+		XattrMetaInfo xattr = new XattrMetaInfo(true, false);
+
 		Map<File, Object> result = new LinkedHashMap<File, Object>();
 
 		for (File f : files) {
-			Object metaObject = xattr.getMetaInfo(f);
-			if (metaObject != null) {
-				result.put(f, metaObject);
+			Object object = xattr.getMetaInfo(f);
+
+			if (object != null) {
+				result.put(f, object);
+			} else if (!strict) {
+				result.put(f, f);
 			}
 		}
 

@@ -25,6 +25,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
@@ -61,7 +62,7 @@ import javax.swing.table.DefaultTableCellRenderer;
 
 import net.filebot.ResourceManager;
 import net.filebot.WebServices;
-import net.filebot.mac.MacAppUtilities;
+import net.filebot.platform.mac.MacAppUtilities;
 import net.filebot.subtitle.SubtitleMetrics;
 import net.filebot.subtitle.SubtitleNaming;
 import net.filebot.util.ui.AbstractBean;
@@ -95,7 +96,7 @@ class SubtitleAutoMatchDialog extends JDialog {
 		preferredSubtitleNaming.setSelectedItem(SubtitleNaming.MATCH_VIDEO_ADD_LANGUAGE_TAG);
 
 		JComponent content = (JComponent) getContentPane();
-		content.setLayout(new MigLayout("fill, insets 12 15 7 15, nogrid", "", "[fill][pref!]"));
+		content.setLayout(new MigLayout("fill, insets 12 15 7 15, nogrid, novisualpadding", "", "[fill][pref!]"));
 
 		content.add(new JScrollPane(subtitleMappingTable), "grow, wrap");
 		content.add(hashMatcherServicePanel, "gap after rel");
@@ -110,7 +111,7 @@ class SubtitleAutoMatchDialog extends JDialog {
 	}
 
 	protected JPanel createServicePanel(Color color) {
-		JPanel panel = new JPanel(new MigLayout("hidemode 3"));
+		JPanel panel = new JPanel(new MigLayout("hidemode 3, novisualpadding"));
 		panel.setBorder(new RoundBorder());
 		panel.setOpaque(false);
 		panel.setBackground(color);
@@ -172,30 +173,26 @@ class SubtitleAutoMatchDialog extends JDialog {
 		component.setBorder(BorderFactory.createEmptyBorder());
 		component.setVisible(false);
 
-		service.addPropertyChangeListener(new PropertyChangeListener() {
-
-			@Override
-			public void propertyChange(PropertyChangeEvent evt) {
-				if (service.getState() == StateValue.STARTED) {
-					component.setIcon(ResourceManager.getIcon("database.go"));
-				} else {
-					component.setIcon(ResourceManager.getIcon(service.getError() == null ? "database.ok" : "database.error"));
-				}
-
-				component.setVisible(true);
-				component.setToolTipText(String.format("%s: %s", service.getName(), service.getError() == null ? service.getState().toString().toLowerCase() : service.getError().getMessage()));
-				servicePanel.setVisible(true);
-				servicePanel.getParent().revalidate();
+		service.addPropertyChangeListener(evt -> {
+			if (service.getState() == StateValue.STARTED) {
+				component.setIcon(ResourceManager.getIcon("database.go"));
+			} else {
+				component.setIcon(ResourceManager.getIcon(service.getError() == null ? "database.ok" : "database.error"));
 			}
+
+			component.setVisible(true);
+			component.setToolTipText(String.format("%s: %s", service.getName(), service.getError() == null ? service.getState().toString().toLowerCase() : service.getError().getMessage()));
+			servicePanel.setVisible(true);
+			servicePanel.getParent().revalidate();
 		});
 
 		services.add(service);
 		servicePanel.add(component);
 	}
 
-	public void startQuery(String languageName) {
-		final SubtitleMappingTableModel mappingModel = (SubtitleMappingTableModel) subtitleMappingTable.getModel();
-		QueryTask queryTask = new QueryTask(services, mappingModel.getVideoFiles(), languageName, SubtitleAutoMatchDialog.this) {
+	public void startQuery(Locale locale) {
+		SubtitleMappingTableModel mappingModel = (SubtitleMappingTableModel) subtitleMappingTable.getModel();
+		QueryTask queryTask = new QueryTask(services, mappingModel.getVideoFiles(), locale, SubtitleAutoMatchDialog.this) {
 
 			@Override
 			protected void process(List<Map<File, List<SubtitleDescriptorBean>>> sequence) {
@@ -218,7 +215,7 @@ class SubtitleAutoMatchDialog extends JDialog {
 
 			@Override
 			protected void done() {
-				SwingUtilities.invokeLater(() -> mappingModel.fireTableStructureChanged()); // make sure UI is refershed after completion
+				SwingUtilities.invokeLater(mappingModel::fireTableStructureChanged); // make sure UI is refershed after completion
 			}
 		};
 
@@ -438,16 +435,13 @@ class SubtitleAutoMatchDialog extends JDialog {
 			if (value == null) {
 				setText("Cancel selection");
 				setIcon(ResourceManager.getIcon("dialog.cancel"));
-				setToolTipText(null);
 			} else {
 				if (subtitleBean.getError() == null) {
 					setText(subtitleBean.getText());
 					setIcon(subtitleBean.getIcon());
-					setToolTipText(null);
 				} else {
-					setText(String.format("%s (%s)", subtitleBean.getText(), subtitleBean.getError().getMessage()));
+					setText(String.format("%s (%s)", subtitleBean.getError(), subtitleBean.getText()));
 					setIcon(ResourceManager.getIcon("status.warning"));
-					setToolTipText(subtitleBean.getError().toString());
 				}
 
 				if (!isSelected) {
@@ -727,13 +721,13 @@ class SubtitleAutoMatchDialog extends JDialog {
 		private final Collection<SubtitleServiceBean> services;
 
 		private final Collection<File> remainingVideos;
-		private final String languageName;
+		private final Locale locale;
 
-		public QueryTask(Collection<SubtitleServiceBean> services, Collection<File> videoFiles, String languageName, Component parent) {
+		public QueryTask(Collection<SubtitleServiceBean> services, Collection<File> videoFiles, Locale locale, Component parent) {
 			this.parent = parent;
 			this.services = services;
 			this.remainingVideos = new TreeSet<File>(videoFiles);
-			this.languageName = languageName;
+			this.locale = locale;
 		}
 
 		@Override
@@ -749,7 +743,7 @@ class SubtitleAutoMatchDialog extends JDialog {
 
 				try {
 					Map<File, List<SubtitleDescriptorBean>> subtitleSet = new HashMap<File, List<SubtitleDescriptorBean>>();
-					for (final Entry<File, List<SubtitleDescriptor>> result : service.lookupSubtitles(remainingVideos, languageName, parent).entrySet()) {
+					for (final Entry<File, List<SubtitleDescriptor>> result : service.lookupSubtitles(remainingVideos, locale, parent).entrySet()) {
 						Set<SubtitleDescriptor> subtitlesByRelevance = new LinkedHashSet<SubtitleDescriptor>();
 
 						// guess best hash match (default order is open bad due to invalid hash links)
@@ -784,7 +778,7 @@ class SubtitleAutoMatchDialog extends JDialog {
 					throw e;
 				} catch (Exception e) {
 					// log and ignore
-					debug.warning(e.getMessage());
+					debug.log(Level.WARNING, e.getMessage(), e);
 				}
 			}
 
@@ -832,6 +826,10 @@ class SubtitleAutoMatchDialog extends JDialog {
 
 				return destination;
 			} catch (Exception e) {
+				// display error message in GUI
+				descriptor.error = e;
+
+				// print to error log
 				debug.log(Level.WARNING, e.getMessage(), e);
 			}
 
@@ -870,13 +868,13 @@ class SubtitleAutoMatchDialog extends JDialog {
 
 		public abstract float getMatchProbabilty(File videoFile, SubtitleDescriptor descriptor);
 
-		protected abstract Map<File, List<SubtitleDescriptor>> getSubtitleList(Collection<File> files, String languageName, Component parent) throws Exception;
+		protected abstract Map<File, List<SubtitleDescriptor>> getSubtitleList(Collection<File> files, Locale locale, Component parent) throws Exception;
 
-		public final Map<File, List<SubtitleDescriptor>> lookupSubtitles(Collection<File> files, String languageName, Component parent) throws Exception {
+		public final Map<File, List<SubtitleDescriptor>> lookupSubtitles(Collection<File> files, Locale locale, Component parent) throws Exception {
 			setState(StateValue.STARTED);
 
 			try {
-				return getSubtitleList(files, languageName, parent);
+				return getSubtitleList(files, locale, parent);
 			} catch (Exception e) {
 				throw (error = e);
 			} finally {
@@ -913,8 +911,8 @@ class SubtitleAutoMatchDialog extends JDialog {
 		}
 
 		@Override
-		protected Map<File, List<SubtitleDescriptor>> getSubtitleList(Collection<File> files, String languageName, Component parent) throws Exception {
-			return lookupSubtitlesByHash(service, files, languageName, true, false);
+		protected Map<File, List<SubtitleDescriptor>> getSubtitleList(Collection<File> files, Locale locale, Component parent) throws Exception {
+			return lookupSubtitlesByHash(service, files, locale, true, false);
 		}
 
 		@Override
@@ -938,8 +936,8 @@ class SubtitleAutoMatchDialog extends JDialog {
 		}
 
 		@Override
-		protected Map<File, List<SubtitleDescriptor>> getSubtitleList(Collection<File> fileSet, String languageName, Component parent) throws Exception {
-			return findSubtitlesByName(service, fileSet, languageName, null, true, false);
+		protected Map<File, List<SubtitleDescriptor>> getSubtitleList(Collection<File> fileSet, Locale locale, Component parent) throws Exception {
+			return findSubtitlesByName(service, fileSet, locale, null, true, false);
 		}
 
 		@Override

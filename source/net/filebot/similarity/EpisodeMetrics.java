@@ -4,6 +4,8 @@ import static java.util.Arrays.*;
 import static java.util.Collections.*;
 import static java.util.regex.Pattern.*;
 import static java.util.stream.Collectors.*;
+import static net.filebot.Logging.*;
+import static net.filebot.MediaTypes.*;
 import static net.filebot.media.MediaDetection.*;
 import static net.filebot.media.XattrMetaInfo.*;
 import static net.filebot.similarity.Normalization.*;
@@ -11,6 +13,7 @@ import static net.filebot.util.FileUtilities.*;
 import static net.filebot.util.StringUtilities.*;
 
 import java.io.File;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.Collection;
@@ -18,13 +21,15 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import com.ibm.icu.text.Transliterator;
 
+import net.filebot.format.BindingException;
+import net.filebot.format.MediaBindingBean;
 import net.filebot.media.SmartSeasonEpisodeMatcher;
 import net.filebot.similarity.SeasonEpisodeMatcher.SxE;
 import net.filebot.vfs.FileInfo;
@@ -33,7 +38,6 @@ import net.filebot.web.EpisodeFormat;
 import net.filebot.web.Movie;
 import net.filebot.web.SeriesInfo;
 import net.filebot.web.SimpleDate;
-import one.util.streamex.StreamEx;
 
 public enum EpisodeMetrics implements SimilarityMetric {
 
@@ -44,41 +48,41 @@ public enum EpisodeMetrics implements SimilarityMetric {
 
 		@Override
 		protected Collection<SxE> parse(Object object) {
+			// SxE sets for Episode objects cannot be cached because the same Episode (by ID) may have different episode numbers depending on the order (e.g. Airdate VS DVD order)
+			if (object instanceof Episode) {
+				Episode episode = (Episode) object;
+				return parse(episode);
+			}
+
 			if (object instanceof Movie) {
 				return emptySet();
 			}
 
-			Collection<SxE> result = transformCache.get(object);
-			if (result != null) {
-				return result;
-			}
-
-			if (object instanceof Episode) {
-				Episode episode = (Episode) object;
-
-				// get SxE from episode, both SxE for season/episode numbering and SxE for absolute episode numbering
-				Set<SxE> sxe = new HashSet<SxE>(2);
-
-				// default SxE numbering
-				if (episode.getEpisode() != null) {
-					sxe.add(new SxE(episode.getSeason(), episode.getEpisode()));
-				}
-				// absolute numbering
-				if (episode.getAbsolute() != null) {
-					sxe.add(new SxE(null, episode.getAbsolute()));
-				}
-				// 0xSpecial numbering
-				if (episode.getSpecial() != null) {
-					sxe.add(new SxE(0, episode.getSpecial()));
-				}
-				result = sxe;
-			} else {
-				result = super.parse(object);
-			}
-
-			transformCache.put(object, result);
-			return result;
+			return transformCache.computeIfAbsent(object, super::parse);
 		}
+
+		private Set<SxE> parse(Episode e) {
+			// get SxE from episode, both SxE for season/episode numbering and SxE for absolute episode numbering
+			Set<SxE> sxe = new HashSet<SxE>(2);
+
+			// default SxE numbering
+			if (e.getEpisode() != null) {
+				sxe.add(new SxE(e.getSeason(), e.getEpisode()));
+
+				// absolute numbering
+				if (e.getAbsolute() != null) {
+					sxe.add(new SxE(null, e.getAbsolute()));
+				}
+			} else {
+				// 0xSpecial numbering
+				if (e.getSpecial() != null) {
+					sxe.add(new SxE(0, e.getSpecial()));
+				}
+			}
+
+			return sxe;
+		}
+
 	}),
 
 	// Match episode airdate
@@ -88,25 +92,16 @@ public enum EpisodeMetrics implements SimilarityMetric {
 
 		@Override
 		public SimpleDate parse(Object object) {
+			if (object instanceof Episode) {
+				Episode episode = (Episode) object;
+				return episode.getAirdate();
+			}
+
 			if (object instanceof Movie) {
 				return null;
 			}
 
-			if (object instanceof Episode) {
-				Episode episode = (Episode) object;
-
-				// use airdate from episode
-				return episode.getAirdate();
-			}
-
-			SimpleDate result = transformCache.get(object);
-			if (result != null) {
-				return result;
-			}
-
-			result = super.parse(object);
-			transformCache.put(object, result);
-			return result;
+			return transformCache.computeIfAbsent(object, super::parse);
 		}
 	}),
 
@@ -168,7 +163,7 @@ public enum EpisodeMetrics implements SimilarityMetric {
 		public Object getTitle(Object o) {
 			if (o instanceof Episode) {
 				Episode e = (Episode) o;
-				return String.format("%s %s", e.getSeriesName(), e.getTitle());
+				return e.getSeriesName() + " " + e.getTitle();
 			}
 			return o;
 		}
@@ -183,16 +178,22 @@ public enum EpisodeMetrics implements SimilarityMetric {
 			String[] f2 = normalize(fields(o2));
 
 			// match all fields and average similarity
-			float sum = 0;
-			for (String s1 : f1) {
-				for (String s2 : f2) {
-					sum += super.getSimilarity(s1, s2);
+			double sum = 0;
+			for (int i = 0; i < f1.length; i++) {
+				for (int j = 0; j < f2.length; j++) {
+					float f = super.getSimilarity(f1[i], f2[j]);
+					if (f > 0) {
+						// 2-sqrt(x) from 0 to 1
+						double multiplier = 2 - Math.sqrt((double) (i + j) / (f1.length + f2.length));
+
+						// bonus points for primary matches (e.g. primary title matches filename > alias title matches folder path)
+						sum += f * multiplier;
+					}
 				}
 			}
 			sum /= f1.length * f2.length;
 
-			// normalize into 3 similarity levels
-			return (float) (Math.ceil(sum * 3) / 3);
+			return sum >= 0.9 ? 1 : sum >= 0.1 ? 0.5f : 0;
 		}
 
 		protected String[] normalize(Object[] objects) {
@@ -200,15 +201,22 @@ public enum EpisodeMetrics implements SimilarityMetric {
 			return stream(objects).map(EpisodeMetrics::normalizeObject).toArray(String[]::new);
 		}
 
+		protected static final int MAX_FIELDS = 5;
+
 		protected Object[] fields(Object object) {
 			if (object instanceof Episode) {
 				Episode e = (Episode) object;
-				return StreamEx.of(e.getSeriesName(), e.getTitle()).append(e.getSeriesNames()).filter(Objects::nonNull).map(Normalization::removeTrailingBrackets).distinct().limit(5).toArray();
+
+				Stream<String> primaryNames = Stream.of(e.getSeriesName(), e.getTitle());
+				Stream<String> aliasNames = e.getSeriesInfo() == null ? Stream.empty() : e.getSeriesInfo().getAliasNames().stream().limit(MAX_FIELDS);
+
+				Stream<String> names = Stream.concat(primaryNames, aliasNames).filter(s -> s != null && s.length() > 0).map(Normalization::removeTrailingBrackets).distinct();
+				return copyOf(names.limit(MAX_FIELDS).toArray(), MAX_FIELDS);
 			}
 
 			if (object instanceof File) {
 				File f = (File) object;
-				return new Object[] { f.getParentFile().getAbsolutePath(), f };
+				return new Object[] { f, f.getParentFile().getPath() };
 			}
 
 			if (object instanceof Movie) {
@@ -505,33 +513,57 @@ public enum EpisodeMetrics implements SimilarityMetric {
 	}),
 
 	// Match by file last modified and episode release dates
-	TimeStamp(new TimeStampMetric() {
+	TimeStamp(new TimeStampMetric(10, ChronoUnit.YEARS) {
 
 		@Override
 		public float getSimilarity(Object o1, Object o2) {
-			// adjust differentiation accuracy to about a year
+			// adjust differentiation accuracy to about 2.5 years
 			float f = super.getSimilarity(o1, o2);
-			return f >= 0.9 ? 1 : f >= 0 ? 0 : -1;
+
+			return f >= 0.75 ? 1 : f >= 0 ? 0 : -1;
+		}
+
+		private long getTimeStamp(SimpleDate date) {
+			// some episodes may not have a defined airdate
+			if (date != null) {
+				Instant t = date.toInstant();
+				if (t.isBefore(Instant.now())) {
+					return t.toEpochMilli();
+				}
+			}
+
+			// big penalty for episodes not yet aired
+			return -1;
+		}
+
+		private long getTimeStamp(File file) {
+			if (VIDEO_FILES.accept(file) && file.length() > ONE_MEGABYTE) {
+				try {
+					return new MediaBindingBean(file, file).getEncodedDate().getTimeStamp();
+				} catch (BindingException e) {
+					debug.finest(e::getMessage); // Binding "General[0][Encoded_Date]": undefined => normal if Encoded_Date is undefined => ignore
+				} catch (Exception e) {
+					debug.warning("Failed to read media encoding date: " + e.getMessage());
+				}
+			}
+
+			return super.getTimeStamp(file); // default to file creation date
 		}
 
 		@Override
 		public long getTimeStamp(Object object) {
 			if (object instanceof Episode) {
-				try {
-					long ts = ((Episode) object).getAirdate().getTimeStamp();
-
-					// big penalty for episodes not yet aired
-					if (ts > System.currentTimeMillis()) {
-						return -1;
-					}
-
-					return ts;
-				} catch (RuntimeException e) {
-					return -1; // some episodes may not have airdate defined
-				}
+				Episode e = (Episode) object;
+				return getTimeStamp(e.getAirdate());
+			} else if (object instanceof Movie) {
+				Movie m = (Movie) object;
+				return getTimeStamp(new SimpleDate(m.getYear(), 1, 1));
+			} else if (object instanceof File) {
+				File file = (File) object;
+				return getTimeStamp(file);
 			}
 
-			return super.getTimeStamp(object);
+			return -1;
 		}
 	}),
 
@@ -676,38 +708,31 @@ public enum EpisodeMetrics implements SimilarityMetric {
 			return "";
 		}
 
-		String result = transformCache.get(object);
-		if (result != null) {
-			return result;
-		}
+		return transformCache.computeIfAbsent(object, o -> {
+			String name = normalizeFileName(o);
 
-		String name;
+			// remove checksums, any [...] or (...)
+			name = removeEmbeddedChecksum(name);
+
+			// remove obvious release info
+			name = stripFormatInfo(name);
+
+			synchronized (transliterator) {
+				name = transliterator.transform(name);
+			}
+
+			// remove or normalize special characters
+			return normalizePunctuation(name).toLowerCase();
+		});
+	}
+
+	private static String normalizeFileName(Object object) {
 		if (object instanceof File) {
-			name = getName((File) object);
+			return getName((File) object);
 		} else if (object instanceof FileInfo) {
-			name = ((FileInfo) object).getName();
-		} else {
-			name = object.toString();
+			return ((FileInfo) object).getName();
 		}
-
-		// remove checksums, any [...] or (...)
-		name = removeEmbeddedChecksum(name);
-
-		// remove obvious release info
-		name = stripFormatInfo(name);
-
-		synchronized (transliterator) {
-			name = transliterator.transform(name);
-		}
-
-		// remove or normalize special characters
-		name = normalizePunctuation(name);
-
-		// normalize to lower case
-		name = name.toLowerCase();
-
-		transformCache.put(object, name);
-		return name;
+		return object.toString();
 	}
 
 	public static SimilarityMetric[] defaultSequence(boolean includeFileMetrics) {

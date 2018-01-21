@@ -19,29 +19,7 @@ import groovy.lang.GroovyClassLoader;
 
 public class ScriptShell {
 
-	public static final String ARGV_BINDING_NAME = "args";
-	public static final String SHELL_BINDING_NAME = "__shell";
-	public static final String SHELL_ARGV_BINDING_NAME = "__args";
-
-	private final ScriptEngine engine;
-	private final ScriptProvider scriptProvider;
-
-	public ScriptShell(ScriptProvider scriptProvider, Map<String, ?> globals) throws ScriptException {
-		this.engine = createScriptEngine();
-		this.scriptProvider = scriptProvider;
-
-		// setup bindings
-		Bindings bindings = engine.createBindings();
-		bindings.putAll(globals);
-
-		// bind API objects
-		bindings.put(SHELL_BINDING_NAME, this);
-
-		// setup script context
-		engine.getContext().setBindings(bindings, ScriptContext.GLOBAL_SCOPE);
-	}
-
-	public ScriptEngine createScriptEngine() {
+	public static ScriptEngine createScriptEngine() {
 		ResourceBundle bundle = ResourceBundle.getBundle(ScriptShell.class.getName());
 
 		CompilerConfiguration config = new CompilerConfiguration();
@@ -57,7 +35,31 @@ public class ScriptShell {
 		return new GroovyScriptEngineImpl(classLoader);
 	}
 
-	public Object evaluate(final String script, final Bindings bindings) throws Throwable {
+	public static final String ARGV_BINDING_NAME = "args";
+	public static final String SHELL_BINDING_NAME = "__shell";
+	public static final String SHELL_CLI_BINDING_NAME = "__cli";
+	public static final String SHELL_ARGS_BINDING_NAME = "__args";
+
+	private final ScriptEngine engine;
+	private final ScriptProvider scriptProvider;
+
+	public ScriptShell(ScriptProvider scriptProvider, CmdlineInterface cli, Map<String, ?> globals) throws ScriptException {
+		this.engine = createScriptEngine();
+		this.scriptProvider = scriptProvider;
+
+		// setup bindings
+		Bindings bindings = engine.createBindings();
+		bindings.putAll(globals);
+
+		// bind API objects
+		bindings.put(SHELL_BINDING_NAME, this);
+		bindings.put(SHELL_CLI_BINDING_NAME, cli);
+
+		// setup script context
+		engine.getContext().setBindings(bindings, ScriptContext.GLOBAL_SCOPE);
+	}
+
+	public Object evaluate(String script, Bindings bindings) throws Throwable {
 		try {
 			return engine.eval(script, bindings);
 		} catch (Throwable e) {

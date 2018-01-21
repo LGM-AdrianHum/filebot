@@ -3,7 +3,6 @@ package net.filebot.ui.rename;
 import static java.util.Arrays.*;
 import static java.util.Collections.*;
 import static java.util.stream.Collectors.*;
-import static javax.swing.JOptionPane.*;
 import static net.filebot.Logging.*;
 import static net.filebot.Settings.*;
 import static net.filebot.media.MediaDetection.*;
@@ -12,16 +11,11 @@ import static net.filebot.util.ExceptionUtilities.*;
 import static net.filebot.util.FileUtilities.*;
 import static net.filebot.util.ui.SwingUI.*;
 
-import java.awt.Dimension;
 import java.awt.Window;
 import java.awt.event.ActionEvent;
 import java.io.File;
-import java.io.IOException;
 import java.util.AbstractList;
-import java.util.AbstractMap.SimpleEntry;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,15 +30,13 @@ import java.util.logging.Level;
 import java.util.stream.Stream;
 
 import javax.swing.AbstractAction;
-import javax.swing.JList;
-import javax.swing.JOptionPane;
-import javax.swing.JScrollPane;
 
 import net.filebot.HistorySpooler;
 import net.filebot.NativeRenameAction;
 import net.filebot.ResourceManager;
 import net.filebot.StandardRenameAction;
-import net.filebot.mac.MacAppUtilities;
+import net.filebot.UserFiles;
+import net.filebot.platform.mac.MacAppUtilities;
 import net.filebot.similarity.Match;
 import net.filebot.util.ui.ProgressMonitor;
 import net.filebot.util.ui.ProgressMonitor.ProgressWorker;
@@ -73,62 +65,59 @@ class RenameAction extends AbstractAction {
 			return;
 		}
 
-		try {
-			Window window = getWindow(evt.getSource());
-			withWaitCursor(window, () -> {
-				Map<File, File> renameMap = checkRenamePlan(validate(model.getRenameMap(), window), window);
-				if (renameMap.isEmpty()) {
-					return;
+		Window window = getWindow(evt.getSource());
+		withWaitCursor(window, () -> {
+			Map<File, File> renameMap = validate(model.getRenameMap(), window);
+
+			if (renameMap.isEmpty()) {
+				return;
+			}
+
+			List<Match<Object, File>> matches = new ArrayList<Match<Object, File>>(model.matches());
+			StandardRenameAction action = (StandardRenameAction) getValue(RENAME_ACTION);
+
+			// start processing
+			Map<File, File> renameLog = new LinkedHashMap<File, File>();
+
+			try {
+				if (useNativeShell() && NativeRenameAction.isSupported(action)) {
+					// call on EDT
+					NativeRenameWorker worker = new NativeRenameWorker(renameMap, renameLog, NativeRenameAction.valueOf(action.name()));
+					worker.call(null, null, null);
+				} else {
+					// call and wait
+					StandardRenameWorker worker = new StandardRenameWorker(renameMap, renameLog, action);
+					String message = String.format("%s %d %s. This may take a while.", action.getDisplayVerb(), renameMap.size(), renameMap.size() == 1 ? "file" : "files");
+					ProgressMonitor.runTask(action.getDisplayName(), message, worker).get();
 				}
+			} catch (CancellationException e) {
+				debug.finest(e::toString);
+			} catch (Throwable e) {
+				log.log(Level.SEVERE, e, cause(getRootCause(e)));
+			}
 
-				List<Match<Object, File>> matches = new ArrayList<Match<Object, File>>(model.matches());
-				StandardRenameAction action = (StandardRenameAction) getValue(RENAME_ACTION);
+			// abort if nothing happened
+			if (renameLog.isEmpty()) {
+				return;
+			}
 
-				// start processing
-				Map<File, File> renameLog = new LinkedHashMap<File, File>();
+			log.info(String.format("%d files renamed.", renameLog.size()));
 
-				try {
-					if (useNativeShell() && isNativeActionSupported(action)) {
-						// call on EDT
-						RenameWorker worker = new NativeRenameWorker(renameMap, renameLog, NativeRenameAction.valueOf(action.name()));
-						worker.call(null, null, null);
-					} else {
-						// call and wait
-						RenameWorker worker = new RenameWorker(renameMap, renameLog, action);
-						String message = String.format("%sing %d %s. This may take a while.", action.getDisplayName(), renameMap.size(), renameMap.size() == 1 ? "file" : "files");
-						ProgressMonitor.runTask(action.getDisplayName(), message, worker).get();
-					}
-				} catch (CancellationException e) {
-					debug.finest(e::toString);
-				} catch (Exception e) {
-					log.log(Level.SEVERE, String.format("%s: %s", getRootCause(e).getClass().getSimpleName(), getRootCauseMessage(e)), e);
-				}
-
-				// abort if nothing happened
-				if (renameLog.isEmpty()) {
-					return;
-				}
-
-				log.info(String.format("%d files renamed.", renameLog.size()));
-
-				// remove renamed matches
-				renameLog.forEach((from, to) -> {
-					model.matches().remove(model.files().indexOf(from));
-				});
-
-				HistorySpooler.getInstance().append(renameLog.entrySet());
-
-				// store xattr
-				storeMetaInfo(renameMap, matches);
-
-				// delete empty folders
-				if (action == StandardRenameAction.MOVE) {
-					deleteEmptyFolders(renameLog);
-				}
+			// remove renamed matches
+			renameLog.forEach((from, to) -> {
+				model.matches().remove(model.files().indexOf(from));
 			});
-		} catch (Throwable e) {
-			log.log(Level.WARNING, e.getMessage(), e);
-		}
+
+			HistorySpooler.getInstance().append(renameLog.entrySet());
+
+			// store xattr
+			storeMetaInfo(renameMap, matches);
+
+			// delete empty folders
+			if (action == StandardRenameAction.MOVE) {
+				deleteEmptyFolders(renameLog);
+			}
+		});
 	}
 
 	private void storeMetaInfo(Map<File, File> renameMap, List<Match<Object, File>> matches) {
@@ -183,7 +172,7 @@ class RenameAction extends AbstractAction {
 		try {
 			for (File file : deleteFiles) {
 				if (file.exists()) {
-					NativeRenameAction.trash(file);
+					UserFiles.trash(file);
 				}
 			}
 		} catch (Throwable e) {
@@ -191,121 +180,53 @@ class RenameAction extends AbstractAction {
 		}
 	}
 
-	public boolean isNativeActionSupported(StandardRenameAction action) {
-		try {
-			return NativeRenameAction.isSupported() && NativeRenameAction.valueOf(action.name()) != null;
-		} catch (IllegalArgumentException e) {
-			return false;
-		}
-	}
+	private Map<File, File> validate(Map<File, File> renameMap, Window parent) {
+		// rename map values as modifiable list
+		List<File> destinationPathView = new AbstractList<File>() {
 
-	private Map<File, File> checkRenamePlan(List<Entry<File, File>> renamePlan, Window parent) throws IOException {
-		// ask for user permissions to output paths
-		if (isMacSandbox()) {
-			if (!MacAppUtilities.askUnlockFolders(parent, renamePlan.stream().flatMap(e -> Stream.of(e.getKey(), resolve(e.getKey(), e.getValue()))).map(f -> new File(f.getAbsolutePath())).collect(toList()))) {
-				return emptyMap();
-			}
-		}
-
-		// build rename map and perform some sanity checks
-		Map<File, File> renameMap = new HashMap<File, File>();
-		Set<File> destinationFiles = new HashSet<File>();
-		List<String> issues = new ArrayList<String>();
-
-		for (Entry<File, File> mapping : renamePlan) {
-			File source = mapping.getKey();
-			File destination = resolve(source, mapping.getValue());
-
-			try {
-				if (renameMap.containsKey(source))
-					throw new IllegalArgumentException("Duplicate source file: " + source.getPath());
-
-				if (destinationFiles.contains(destination))
-					throw new IllegalArgumentException("Conflict detected: " + mapping.getValue().getPath());
-
-				if (destination.exists() && !resolve(mapping.getKey(), mapping.getValue()).equals(mapping.getKey()))
-					throw new IllegalArgumentException("File already exists: " + mapping.getValue().getPath());
-
-				if (getExtension(destination) == null && destination.isFile())
-					throw new IllegalArgumentException("Missing extension: " + mapping.getValue().getPath());
-
-				// use original mapping values
-				renameMap.put(mapping.getKey(), mapping.getValue());
-				destinationFiles.add(destination);
-			} catch (Exception e) {
-				issues.add(e.getMessage());
-			}
-		}
-
-		if (issues.size() > 0) {
-			String text = "These files will be ignored. Do you want to continue?";
-			JList issuesComponent = new JList(issues.toArray()) {
-
-				@Override
-				public Dimension getPreferredScrollableViewportSize() {
-					// adjust component size
-					return new Dimension(80, 80);
-				}
-			};
-			Object[] message = new Object[] { text, new JScrollPane(issuesComponent) };
-			String[] actions = new String[] { "Continue", "Cancel" };
-			JOptionPane pane = new JOptionPane(message, PLAIN_MESSAGE, YES_NO_OPTION, null, actions, actions[1]);
-
-			// display option dialog
-			pane.createDialog(getWindow(parent), "Conflicting Files").setVisible(true);
-
-			if (pane.getValue() != actions[0]) {
-				return emptyMap();
-			}
-		}
-
-		return renameMap;
-	}
-
-	private List<Entry<File, File>> validate(Map<File, String> renameMap, Window parent) {
-		final List<Entry<File, File>> source = new ArrayList<Entry<File, File>>(renameMap.size());
-
-		for (Entry<File, String> entry : renameMap.entrySet()) {
-			source.add(new SimpleEntry<File, File>(entry.getKey(), new File(entry.getValue())));
-		}
-
-		List<File> destinationFileNameView = new AbstractList<File>() {
+			private File[] keyIndex = renameMap.keySet().toArray(new File[0]);
 
 			@Override
-			public File get(int index) {
-				return source.get(index).getValue();
+			public File get(int i) {
+				return renameMap.get(keyIndex[i]);
 			}
 
 			@Override
-			public File set(int index, File name) {
-				return source.get(index).setValue(name);
+			public File set(int i, File value) {
+				return renameMap.put(keyIndex[i], value);
 			}
 
 			@Override
 			public int size() {
-				return source.size();
+				return keyIndex.length;
 			}
 		};
 
-		if (ValidateDialog.validate(parent, destinationFileNameView)) {
-			// names have been validated via view
-			return source;
+		if (ValidateDialog.validate(parent, destinationPathView)) {
+			// ask for user permissions for output folders so we can check them
+			if (isMacSandbox()) {
+				if (!MacAppUtilities.askUnlockFolders(parent, renameMap.entrySet().stream().flatMap(e -> Stream.of(e.getKey(), resolve(e.getKey(), e.getValue()))).collect(toList()))) {
+					return emptyMap();
+				}
+			}
+
+			if (ConflictDialog.check(parent, renameMap)) {
+				return renameMap;
+			}
 		}
 
 		// return empty list if validation was cancelled
-		return emptyList();
+		return emptyMap();
 	}
 
-	protected static class RenameWorker implements ProgressWorker<Map<File, File>> {
+	protected static class StandardRenameWorker implements ProgressWorker<Map<File, File>> {
 
-		protected final Map<File, File> renameMap;
-		protected final Map<File, File> renameLog;
+		private Map<File, File> renameMap;
+		private Map<File, File> renameLog;
 
-		protected final net.filebot.RenameAction action;
+		private StandardRenameAction action;
 
-		protected boolean cancelled = false;
-
-		public RenameWorker(Map<File, File> renameMap, Map<File, File> renameLog, net.filebot.RenameAction action) {
+		public StandardRenameWorker(Map<File, File> renameMap, Map<File, File> renameLog, StandardRenameAction action) {
 			this.renameMap = renameMap;
 			this.renameLog = renameLog;
 			this.action = action;
@@ -336,38 +257,47 @@ class RenameAction extends AbstractAction {
 		}
 	}
 
-	protected static class NativeRenameWorker extends RenameWorker {
+	protected static class NativeRenameWorker implements ProgressWorker<Map<File, File>> {
+
+		private Map<File, File> renameMap;
+		private Map<File, File> renameLog;
+
+		private NativeRenameAction action;
 
 		public NativeRenameWorker(Map<File, File> renameMap, Map<File, File> renameLog, NativeRenameAction action) {
-			super(renameMap, renameLog, action);
+			this.renameMap = renameMap;
+			this.renameLog = renameLog;
+			this.action = action;
 		}
 
 		@Override
 		public Map<File, File> call(Consumer<String> message, BiConsumer<Long, Long> progress, Supplier<Boolean> cancelled) throws Exception {
-			NativeRenameAction shell = (NativeRenameAction) action;
-
 			// prepare delta, ignore files already named as desired
 			Map<File, File> renamePlan = new LinkedHashMap<File, File>();
-			for (Entry<File, File> mapping : renameMap.entrySet()) {
-				File source = mapping.getKey();
-				File destination = resolve(mapping.getKey(), mapping.getValue());
-				if (!source.equals(destination)) {
-					renamePlan.put(source, destination);
+
+			renameMap.forEach((from, to) -> {
+				// resolve relative paths
+				to = resolve(from, to);
+
+				if (!equalsCaseSensitive(from, to)) {
+					renamePlan.put(from, to);
 				}
-			}
+			});
 
 			// call native shell move/copy
 			try {
-				shell.rename(renamePlan);
+				action.rename(renamePlan);
 			} catch (CancellationException e) {
 				debug.finest(e::getMessage);
 			}
 
-			for (Entry<File, File> it : renameMap.entrySet()) {
-				if (resolve(it.getKey(), it.getValue()).exists()) {
-					renameLog.put(it.getKey(), it.getValue());
+			// confirm results
+			renameMap.forEach((from, to) -> {
+				// resolve relative paths
+				if (resolve(from, to).exists()) {
+					renameLog.put(from, to);
 				}
-			}
+			});
 
 			return renameLog;
 		}

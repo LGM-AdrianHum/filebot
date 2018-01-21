@@ -10,6 +10,7 @@ import static net.filebot.Logging.*;
 import static net.filebot.Settings.*;
 import static net.filebot.UserFiles.*;
 import static net.filebot.media.XattrMetaInfo.*;
+import static net.filebot.util.FileUtilities.*;
 import static net.filebot.util.RegularExpressions.*;
 import static net.filebot.util.ui.SwingUI.*;
 
@@ -60,7 +61,6 @@ import javax.swing.RowSorter.SortKey;
 import javax.swing.SortOrder;
 import javax.swing.border.CompoundBorder;
 import javax.swing.border.TitledBorder;
-import javax.swing.event.DocumentEvent;
 import javax.swing.event.ListSelectionEvent;
 import javax.swing.event.ListSelectionListener;
 import javax.swing.table.AbstractTableModel;
@@ -72,16 +72,15 @@ import javax.swing.table.TableRowSorter;
 import net.filebot.History;
 import net.filebot.History.Element;
 import net.filebot.History.Sequence;
+import net.filebot.platform.mac.MacAppUtilities;
+import net.filebot.HistorySpooler;
 import net.filebot.ResourceManager;
 import net.filebot.StandardRenameAction;
-import net.filebot.mac.MacAppUtilities;
 import net.filebot.ui.transfer.FileExportHandler;
 import net.filebot.ui.transfer.FileTransferablePolicy;
 import net.filebot.ui.transfer.LoadAction;
 import net.filebot.ui.transfer.SaveAction;
 import net.filebot.ui.transfer.TransferablePolicy;
-import net.filebot.ui.transfer.TransferablePolicy.TransferAction;
-import net.filebot.util.FileUtilities;
 import net.filebot.util.FileUtilities.ExtensionFileFilter;
 import net.filebot.util.ui.GradientStyle;
 import net.filebot.util.ui.LazyDocumentListener;
@@ -116,9 +115,9 @@ class HistoryDialog extends JDialog {
 		header.setBorder(new SeparatorBorder(1, new Color(0xB4B4B4), new Color(0xACACAC), GradientStyle.LEFT_TO_RIGHT, Position.BOTTOM));
 
 		header.add(title, "wrap");
-		header.add(infoLabel, "gap indent*2, wrap paragraph:push");
+		header.add(infoLabel, "gap indent*2, wrap");
 
-		JPanel content = new JPanel(new MigLayout("fill, insets dialog, nogrid", "", "[pref!][150px:pref:200px][200px:pref:max, grow][pref!]"));
+		JPanel content = new JPanel(new MigLayout("fill, insets dialog, nogrid, novisualpadding", "", "[pref!][150px:pref:200px][200px:pref:max, grow][pref!]"));
 
 		content.add(new JLabel("Filter:"), "gap indent:push");
 		content.add(filterEditor, "wmin 120px, gap rel");
@@ -127,15 +126,7 @@ class HistoryDialog extends JDialog {
 		content.add(createScrollPaneGroup("Sequences", sequenceTable), "growx, wrap paragraph");
 		content.add(createScrollPaneGroup("Elements", elementTable), "growx, wrap paragraph");
 
-		// use ADD by default
-		Action importAction = new LoadAction("Import", ResourceManager.getIcon("action.load"), this::getTransferablePolicy) {
-
-			@Override
-			public TransferAction getTransferAction(ActionEvent evt) {
-				// if SHIFT was pressed when the button was clicked, assume PUT action, use ADD by default
-				return ((evt.getModifiers() & ActionEvent.SHIFT_MASK) != 0) ? TransferAction.PUT : TransferAction.ADD;
-			}
-		};
+		Action importAction = new LoadAction("Import", ResourceManager.getIcon("action.load"), this::getTransferablePolicy);
 
 		content.add(new JButton(importAction), "wmin button, hmin 25px, gap indent, sg button");
 		content.add(new JButton(new SaveAction("Export", ResourceManager.getIcon("action.save"), exportHandler)), "gap rel, sg button");
@@ -145,7 +136,7 @@ class HistoryDialog extends JDialog {
 		JComponent pane = (JComponent) getContentPane();
 		pane.setLayout(new MigLayout("fill, insets 0, nogrid"));
 
-		pane.add(header, "hmin 60px, growx, dock north");
+		pane.add(header, "h min!, growx, dock north");
 		pane.add(content, "grow");
 
 		// initialize selection modes
@@ -171,14 +162,10 @@ class HistoryDialog extends JDialog {
 		});
 
 		// clear sequence selection when elements are selected
-		elementTable.getSelectionModel().addListSelectionListener(new ListSelectionListener() {
-
-			@Override
-			public void valueChanged(ListSelectionEvent e) {
-				if (elementTable.getSelectedRow() >= 0) {
-					// allow selected rows only in one of the two tables
-					sequenceTable.getSelectionModel().clearSelection();
-				}
+		elementTable.getSelectionModel().addListSelectionListener(evt -> {
+			if (elementTable.getSelectedRow() >= 0) {
+				// allow selected rows only in one of the two tables
+				sequenceTable.getSelectionModel().clearSelection();
 			}
 		});
 
@@ -219,29 +206,25 @@ class HistoryDialog extends JDialog {
 		});
 
 		// update sequence and element filter on change
-		filterEditor.getDocument().addDocumentListener(new LazyDocumentListener() {
+		filterEditor.getDocument().addDocumentListener(new LazyDocumentListener(evt -> {
+			List<HistoryFilter> filterList = new ArrayList<HistoryFilter>();
 
-			@Override
-			public void update(DocumentEvent e) {
-				List<HistoryFilter> filterList = new ArrayList<HistoryFilter>();
-
-				// filter by all words
-				for (String word : SPACE.split(filterEditor.getText())) {
-					filterList.add(new HistoryFilter(word));
-				}
-
-				// use filter on both tables
-				for (JTable table : Arrays.asList(sequenceTable, elementTable)) {
-					TableRowSorter sorter = (TableRowSorter) table.getRowSorter();
-					sorter.setRowFilter(RowFilter.andFilter(filterList));
-				}
-
-				if (sequenceTable.getSelectedRow() < 0 && sequenceTable.getRowCount() > 0) {
-					// selection lost, maybe due to filtering, auto-select next row
-					sequenceTable.getSelectionModel().addSelectionInterval(0, 0);
-				}
+			// filter by all words
+			for (String word : SPACE.split(filterEditor.getText())) {
+				filterList.add(new HistoryFilter(word));
 			}
-		});
+
+			// use filter on both tables
+			for (JTable table : Arrays.asList(sequenceTable, elementTable)) {
+				TableRowSorter sorter = (TableRowSorter) table.getRowSorter();
+				sorter.setRowFilter(RowFilter.andFilter(filterList));
+			}
+
+			if (sequenceTable.getSelectedRow() < 0 && sequenceTable.getRowCount() > 0) {
+				// selection lost, maybe due to filtering, auto-select next row
+				sequenceTable.getSelectionModel().addSelectionInterval(0, 0);
+			}
+		}));
 
 		// install context menu
 		sequenceTable.addMouseListener(contextMenuProvider);
@@ -606,26 +589,25 @@ class HistoryDialog extends JDialog {
 
 		@Override
 		protected boolean accept(List<File> files) {
-			return FileUtilities.containsOnly(files, new ExtensionFileFilter("xml"));
+			return containsOnly(files, new ExtensionFileFilter("xml"));
 		}
 
 		@Override
 		protected void clear() {
-			setModel(new History());
+			// do nothing
 		}
 
 		@Override
 		protected void load(List<File> files, TransferAction action) throws IOException {
-			History history = getModel();
-
-			try {
-				for (File file : files) {
-					history.merge(History.importHistory(new FileInputStream(file)));
+			for (File file : files) {
+				try {
+					HistorySpooler.getInstance().append(History.importHistory(new FileInputStream(file)));
+				} catch (Exception e) {
+					log.log(Level.SEVERE, "Failed to import history: " + file, e);
 				}
-			} finally {
-				// update view
-				setModel(history);
 			}
+
+			setModel(HistorySpooler.getInstance().getCompleteHistory()); // update view
 		}
 
 		@Override
@@ -723,17 +705,14 @@ class HistoryDialog extends JDialog {
 			case 1:
 				return "Name";
 			case 2:
-				return "Count";
-			case 3:
 				return "Date";
-			default:
-				return null;
 			}
+			return null;
 		}
 
 		@Override
 		public int getColumnCount() {
-			return 4;
+			return 3;
 		}
 
 		@Override
@@ -749,12 +728,9 @@ class HistoryDialog extends JDialog {
 			case 1:
 				return String.class;
 			case 2:
-				return Integer.class;
-			case 3:
 				return Date.class;
-			default:
-				return null;
 			}
+			return null;
 		}
 
 		@Override
@@ -765,12 +741,9 @@ class HistoryDialog extends JDialog {
 			case 1:
 				return getName(data.get(row));
 			case 2:
-				return data.get(row).elements().size();
-			case 3:
 				return data.get(row).date();
-			default:
-				return null;
 			}
+			return null;
 		}
 
 		public Sequence getRow(int row) {

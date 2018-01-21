@@ -17,13 +17,14 @@ import net.filebot.web.SortOrder;
 
 public class PlainFileMatcher implements Datasource, AutoCompleteMatcher {
 
-	public static PlainFileMatcher getInstance() {
-		return new PlainFileMatcher();
+	@Override
+	public String getIdentifier() {
+		return "file";
 	}
 
 	@Override
 	public String getName() {
-		return "Generic File";
+		return "Plain File";
 	}
 
 	@Override

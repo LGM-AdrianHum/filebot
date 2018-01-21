@@ -4,39 +4,44 @@ package net.filebot.similarity;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.time.temporal.ChronoUnit;
 
 public class TimeStampMetric implements SimilarityMetric {
+
+	private long epoch;
+
+	public TimeStampMetric(int i, ChronoUnit unit) {
+		this.epoch = unit.getDuration().multipliedBy(i).toMillis();
+	}
 
 	@Override
 	public float getSimilarity(Object o1, Object o2) {
 		long t1 = getTimeStamp(o1);
 		long t2 = getTimeStamp(o2);
 
-		if (t1 <= 0 || t2 <= 0)
-			return -1;
+		if (t1 > 0 && t2 > 0) {
+			float delta = Math.abs(t1 - t2);
 
-		float min = Math.min(t1, t2);
-		float max = Math.max(t1, t2);
+			return delta > epoch ? 0 : 1 - (delta / epoch);
+		}
 
-		return min / max;
+		return -1;
 	}
 
-	public long getTimeStamp(Object obj) {
-		if (obj instanceof File) {
+	public long getTimeStamp(Object object) {
+		if (object instanceof File) {
+			File f = (File) object;
 			try {
-				BasicFileAttributes attr = Files.readAttributes(((File) obj).toPath(), BasicFileAttributes.class);
+				BasicFileAttributes attr = Files.readAttributes(f.toPath(), BasicFileAttributes.class);
 				long creationTime = attr.creationTime().toMillis();
 				if (creationTime > 0) {
 					return creationTime;
 				} else {
 					return attr.lastModifiedTime().toMillis();
 				}
-			} catch (Throwable e) {
-				// ignore Java 6 issues
-				return ((File) obj).lastModified();
+			} catch (Exception e) {
+				// ignore, default to -1
 			}
-		} else if (obj instanceof Number) {
-			return ((Number) obj).longValue();
 		}
 
 		return -1;

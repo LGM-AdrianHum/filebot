@@ -51,7 +51,11 @@ public final class XPathUtilities {
 	 * @return text content of the child node or null if no child with the given name was found
 	 */
 	public static Node getChild(String nodeName, Node parentNode) {
-		return stream(parentNode.getChildNodes()).filter(n -> nodeName.equals(n.getNodeName())).findFirst().orElse(null);
+		if (parentNode == null) {
+			return null;
+		} else {
+			return stream(parentNode.getChildNodes()).filter(n -> nodeName.equals(n.getNodeName())).findFirst().orElse(null);
+		}
 	}
 
 	public static Node[] getChildren(String nodeName, Node parentNode) {
@@ -63,11 +67,12 @@ public final class XPathUtilities {
 	}
 
 	public static String getAttribute(String attribute, Node node) {
-		Node attributeNode = node.getAttributes().getNamedItem(attribute);
-
-		if (attributeNode != null)
-			return attributeNode.getNodeValue().trim();
-
+		if (node != null) {
+			Node attr = node.getAttributes().getNamedItem(attribute);
+			if (attr != null) {
+				return attr.getNodeValue().trim();
+			}
+		}
 		return null;
 	}
 
@@ -122,7 +127,7 @@ public final class XPathUtilities {
 
 	public static Double getDecimal(String textContent) {
 		try {
-			return new Double(textContent);
+			return Double.parseDouble(textContent);
 		} catch (NumberFormatException | NullPointerException e) {
 			return null;
 		}

@@ -48,8 +48,15 @@ public class AutoDetection {
 	private Locale locale;
 
 	public AutoDetection(Collection<File> root, boolean resolve, Locale locale) {
-		this.files = (resolve ? resolve(root.stream().map(FastFile::new), getSystemFilesFilter()) : root.stream()).toArray(File[]::new);
 		this.locale = locale;
+
+		// require a set of distinct files
+		this.files = root.stream().sorted().distinct().map(FastFile::new).toArray(File[]::new);
+
+		// resolve folders if required
+		if (resolve) {
+			this.files = resolve(stream(files), getSystemFilesFilter()).toArray(File[]::new);
+		}
 	}
 
 	protected Stream<File> resolve(Stream<File> root, FileFilter excludes) {
@@ -76,7 +83,7 @@ public class AutoDetection {
 	private static final Pattern ANIME_PATTERN = Pattern.compile("Anime", CASE_INSENSITIVE);
 
 	private static final Pattern EPISODE_PATTERN = Pattern.compile("E[P]?\\d{1,3}", CASE_INSENSITIVE);
-	private static final Pattern SERIES_EPISODE_PATTERN = Pattern.compile("^tv[sp]\\p{Punct}", CASE_INSENSITIVE);
+	private static final Pattern SERIES_EPISODE_PATTERN = Pattern.compile("^tv[sp][ _.-]", CASE_INSENSITIVE);
 	private static final Pattern ANIME_EPISODE_PATTERN = Pattern.compile("^\\[[^\\]]+Subs\\]", CASE_INSENSITIVE);
 
 	public boolean isMusic(File f) {
@@ -109,7 +116,7 @@ public class AutoDetection {
 			return true;
 		}
 
-		if (VIDEO_FILES.accept(f)) {
+		if (VIDEO_FILES.accept(f) && f.length() > ONE_MEGABYTE) {
 			// check for Japanese audio or characteristic subtitles
 			try (MediaInfo mi = new MediaInfo().open(f)) {
 				long minutes = Duration.ofMillis(Long.parseLong(mi.get(StreamKind.General, 0, "Duration"))).toMinutes();
@@ -142,7 +149,7 @@ public class AutoDetection {
 		try {
 			stream(files).collect(toMap(f -> f, f -> workerThreadPool.submit(() -> detectGroup(f)))).forEach((file, group) -> {
 				try {
-					groups.computeIfAbsent(group.get(), k -> new TreeSet<File>()).add(file);
+					groups.computeIfAbsent(group.get(), k -> new TreeSet<File>()).add(new File(file.getPath())); // use FastFile internally but do not expose to outside code that expects File objects
 				} catch (Exception e) {
 					debug.log(Level.SEVERE, e.getMessage(), e);
 				}
@@ -300,10 +307,10 @@ public class AutoDetection {
 		}
 
 		public boolean commonNumberPattern() {
-			return getChildren(f.getParentFile()).stream().filter(VIDEO_FILES::accept).filter(it -> {
+			return getChildren(f.getParentFile(), VIDEO_FILES, HUMAN_NAME_ORDER).stream().filter(it -> {
 				return find(dn, snm) || find(normalize(it.getName()), snm);
 			}).map(it -> {
-				return streamMatches(it.getName(), EPISODE_NUMBERS).map(Integer::new).collect(toSet());
+				return streamMatches(it.getName(), EPISODE_NUMBERS).map(Integer::parseInt).collect(toSet());
 			}).filter(it -> it.size() > 0).distinct().count() >= 10;
 		}
 

@@ -41,10 +41,10 @@ class RenameList<E> extends FileBotList<E> {
 
 		getRemoveAction().setEnabled(true);
 
-		buttonPanel = new JPanel(new MigLayout("insets 1.2mm, nogrid, fill", "align center"));
-		buttonPanel.add(createImageButton(downAction), "gap 10px");
-		buttonPanel.add(createImageButton(upAction), "gap 0");
-		buttonPanel.add(createLoadButton(), "gap 10px");
+		buttonPanel = new JPanel(new MigLayout("insets 1.2mm, nogrid, novisualpadding, fill", "align center"));
+		buttonPanel.add(createImageButton(downAction), "sgy button");
+		buttonPanel.add(createImageButton(upAction), "gap 0, sgy button");
+		buttonPanel.add(createLoadButton(), "gap 10px, sgy button");
 
 		add(buttonPanel, BorderLayout.SOUTH);
 

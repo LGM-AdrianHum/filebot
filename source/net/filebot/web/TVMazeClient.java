@@ -20,7 +20,7 @@ import net.filebot.ResourceManager;
 public class TVMazeClient extends AbstractEpisodeListProvider {
 
 	@Override
-	public String getName() {
+	public String getIdentifier() {
 		return "TVmaze";
 	}
 
@@ -65,9 +65,9 @@ public class TVMazeClient extends AbstractEpisodeListProvider {
 
 		String status = getStringValue(response, "status", String::new);
 		SimpleDate premiered = getStringValue(response, "premiered", SimpleDate::parse);
-		Integer runtime = getStringValue(response, "runtime", Integer::new);
+		Integer runtime = getStringValue(response, "runtime", Integer::parseInt);
 		Object[] genres = getArray(response, "genres");
-		Double rating = getStringValue(getMap(response, "rating"), "average", Double::new);
+		Double rating = getStringValue(getMap(response, "rating"), "average", Double::parseDouble);
 
 		SeriesInfo seriesInfo = new SeriesInfo(this, sortOrder, locale, show.getId());
 		seriesInfo.setName(show.getName());
@@ -89,12 +89,13 @@ public class TVMazeClient extends AbstractEpisodeListProvider {
 		Object response = request("shows/" + seriesInfo.getId() + "/episodes");
 
 		List<Episode> episodes = streamJsonObjects(response).map(episode -> {
-			String episodeTitle = getString(episode, "name");
+			Integer id = getInteger(episode, "id");
 			Integer seasonNumber = getInteger(episode, "season");
 			Integer episodeNumber = getInteger(episode, "number");
+			String episodeTitle = getString(episode, "name");
 			SimpleDate airdate = getStringValue(episode, "airdate", SimpleDate::parse);
 
-			return new Episode(seriesInfo.getName(), seasonNumber, episodeNumber, episodeTitle, null, null, airdate, seriesInfo);
+			return new Episode(seriesInfo.getName(), seasonNumber, episodeNumber, episodeTitle, null, null, airdate, id, seriesInfo);
 		}).collect(toList());
 
 		return new SeriesData(seriesInfo, episodes);

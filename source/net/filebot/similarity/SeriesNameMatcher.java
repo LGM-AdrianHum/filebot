@@ -119,7 +119,6 @@ public class SeriesNameMatcher {
 	 * @return series names that have been matched one or multiple times depending on the threshold
 	 */
 	private Collection<String> flatMatchAll(String[] names, Pattern prefixPattern, int threshold, boolean strict) {
-		@SuppressWarnings("unchecked")
 		Comparator<String> wordComparator = (Comparator) commonSequenceMatcher.getCollator();
 		ThresholdCollection<String> thresholdCollection = new ThresholdCollection<String>(threshold, wordComparator);
 
@@ -237,13 +236,8 @@ public class SeriesNameMatcher {
 	}
 
 	protected String normalize(String name) {
-		// remove group names and checksums, any [...] or (...)
-		name = normalizeBrackets(name);
-
-		// remove/normalize special characters
-		name = normalizePunctuation(name);
-
-		return name;
+		// remove group names and checksums, any [...] or (...) and remove/normalize special characters
+		return normalizePunctuation(normalizeBrackets(name));
 	}
 
 	protected <T> T[] firstCommonSequence(T[] seq1, T[] seq2, int maxStartIndex, Comparator<T> equalsComparator) {

@@ -1,5 +1,6 @@
 package net.filebot.subtitle;
 
+import static java.nio.charset.StandardCharsets.*;
 import static java.util.Collections.*;
 import static java.util.stream.Collectors.*;
 import static net.filebot.Logging.*;
@@ -10,11 +11,10 @@ import static net.filebot.util.FileUtilities.*;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
 import java.io.Reader;
 import java.nio.ByteBuffer;
-import java.nio.CharBuffer;
 import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -26,11 +26,23 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
+import org.apache.commons.io.IOUtils;
+
+import com.optimaize.langdetect.DetectedLanguage;
+import com.optimaize.langdetect.LanguageDetector;
+import com.optimaize.langdetect.LanguageDetectorBuilder;
+import com.optimaize.langdetect.i18n.LdLocale;
+import com.optimaize.langdetect.ngram.NgramExtractors;
+import com.optimaize.langdetect.profiles.BuiltInLanguages;
+import com.optimaize.langdetect.profiles.LanguageProfile;
+import com.optimaize.langdetect.profiles.LanguageProfileReader;
 
 import net.filebot.Language;
 import net.filebot.similarity.EpisodeMetrics;
@@ -43,7 +55,7 @@ import net.filebot.similarity.SequenceMatchSimilarity;
 import net.filebot.similarity.SimilarityComparator;
 import net.filebot.similarity.SimilarityMetric;
 import net.filebot.util.ByteBufferInputStream;
-import net.filebot.util.UnicodeReader;
+import net.filebot.util.ByteBufferOutputStream;
 import net.filebot.vfs.ArchiveType;
 import net.filebot.vfs.MemoryFile;
 import net.filebot.web.Movie;
@@ -52,19 +64,10 @@ import net.filebot.web.SubtitleProvider;
 import net.filebot.web.SubtitleSearchResult;
 import net.filebot.web.VideoHashSubtitleService;
 
-import com.optimaize.langdetect.DetectedLanguage;
-import com.optimaize.langdetect.LanguageDetector;
-import com.optimaize.langdetect.LanguageDetectorBuilder;
-import com.optimaize.langdetect.i18n.LdLocale;
-import com.optimaize.langdetect.ngram.NgramExtractors;
-import com.optimaize.langdetect.profiles.BuiltInLanguages;
-import com.optimaize.langdetect.profiles.LanguageProfile;
-import com.optimaize.langdetect.profiles.LanguageProfileReader;
-
 public final class SubtitleUtilities {
 
-	public static Map<File, List<SubtitleDescriptor>> lookupSubtitlesByHash(VideoHashSubtitleService service, Collection<File> files, String languageName, boolean addOptions, boolean strict) throws Exception {
-		Map<File, List<SubtitleDescriptor>> options = service.getSubtitleList(files.toArray(new File[files.size()]), languageName);
+	public static Map<File, List<SubtitleDescriptor>> lookupSubtitlesByHash(VideoHashSubtitleService service, Collection<File> files, Locale locale, boolean addOptions, boolean strict) throws Exception {
+		Map<File, List<SubtitleDescriptor>> options = service.getSubtitleList(files.toArray(new File[files.size()]), locale);
 		Map<File, List<SubtitleDescriptor>> results = new LinkedHashMap<File, List<SubtitleDescriptor>>(options.size());
 
 		options.forEach((k, v) -> {
@@ -86,7 +89,7 @@ public final class SubtitleUtilities {
 		return results;
 	}
 
-	public static Map<File, List<SubtitleDescriptor>> findSubtitlesByName(SubtitleProvider service, Collection<File> fileSet, String languageName, String forceQuery, boolean addOptions, boolean strict) throws Exception {
+	public static Map<File, List<SubtitleDescriptor>> findSubtitlesByName(SubtitleProvider service, Collection<File> fileSet, Locale locale, String forceQuery, boolean addOptions, boolean strict) throws Exception {
 		// ignore anything that is not a video
 		fileSet = filter(fileSet, VIDEO_FILES);
 
@@ -170,7 +173,7 @@ public final class SubtitleUtilities {
 
 					if (searchBySeries) {
 						// search for subtitles for the given files
-						List<SxE> numbers = files.stream().flatMap(f -> parseEpisodeNumber(f, true).stream()).distinct().collect(toList());
+						List<SxE> numbers = files.stream().map(f -> parseEpisodeNumber(f, true)).filter(Objects::nonNull).flatMap(Collection::stream).distinct().collect(toList());
 
 						if (numbers.size() == 1) {
 							episodeFilter = numbers.stream().map(sxe -> new int[] { sxe.season, sxe.episode }).toArray(int[][]::new); // season-and-episode filter
@@ -179,7 +182,7 @@ public final class SubtitleUtilities {
 						}
 					}
 
-					subtitles.addAll(service.getSubtitleList(it, episodeFilter, languageName));
+					subtitles.addAll(service.getSubtitleList(it, episodeFilter, locale));
 				}
 
 				// allow early abort
@@ -321,24 +324,16 @@ public final class SubtitleUtilities {
 				likelyFormats.addLast(format);
 		}
 
+		// decode bytes and beware of byte-order marks
+		Reader reader = createTextReader(new ByteBufferInputStream(file.getData()), true, UTF_8);
+		String content = IOUtils.toString(reader);
+
 		// decode subtitle file with the first reader that seems to work
 		for (SubtitleFormat format : likelyFormats) {
-			// decode bytes and beware of byte-order marks
-			Reader reader = new UnicodeReader(new ByteBufferInputStream(file.getData()), true, StandardCharsets.UTF_8);
+			List<SubtitleElement> subtitles = format.getDecoder().decode(content).collect(toList());
 
-			// reset reader to position 0
-			SubtitleReader parser = format.newReader(reader);
-
-			if (parser.hasNext()) {
-				// correct format found
-				List<SubtitleElement> list = new ArrayList<SubtitleElement>(500);
-
-				// read subtitle file
-				while (parser.hasNext()) {
-					list.add(parser.next());
-				}
-
-				return list;
+			if (subtitles.size() > 0) {
+				return subtitles;
 			}
 		}
 
@@ -346,29 +341,38 @@ public final class SubtitleUtilities {
 		throw new IOException("Subtitle format not supported");
 	}
 
-	public static ByteBuffer exportSubtitles(MemoryFile data, SubtitleFormat outputFormat, long outputTimingOffset, Charset outputEncoding) throws IOException {
+	public static ByteBuffer exportSubtitles(MemoryFile file, SubtitleFormat outputFormat, long outputTimingOffset, Charset outputEncoding) throws IOException {
 		if (outputFormat != null && outputFormat != SubtitleFormat.SubRip) {
 			throw new IllegalArgumentException("Format not supported");
 		}
 
-		// convert to target format and target encoding
+		ByteBufferOutputStream buffer = new ByteBufferOutputStream(file.size());
+		OutputStreamWriter writer = new OutputStreamWriter(buffer, outputEncoding);
+
 		if (outputFormat == SubtitleFormat.SubRip) {
-			// output buffer
-			StringBuilder buffer = new StringBuilder(4 * 1024);
-			try (SubRipWriter out = new SubRipWriter(buffer)) {
-				for (SubtitleElement it : decodeSubtitles(data)) {
+			// convert to target format and target encoding
+			try (SubRipWriter out = new SubRipWriter(writer)) {
+				for (SubtitleElement it : decodeSubtitles(file)) {
+					if (it.isEmpty()) {
+						debug.warning(message("Subtitle element is empty", it));
+						continue;
+					}
+
+					// adjust offset if necessary
 					if (outputTimingOffset != 0) {
 						it = new SubtitleElement(Math.max(0, it.getStart() + outputTimingOffset), Math.max(0, it.getEnd() + outputTimingOffset), it.getText());
 					}
+
 					out.write(it);
 				}
 			}
-
-			return outputEncoding.encode(CharBuffer.wrap(buffer));
+		} else {
+			// convert only text encoding
+			Reader reader = createTextReader(new ByteBufferInputStream(file.getData()), true, UTF_8);
+			IOUtils.copy(reader, writer);
 		}
 
-		// only change encoding
-		return outputEncoding.encode(getText(data.getData()));
+		return buffer.getByteBuffer();
 	}
 
 	public static SubtitleFormat getSubtitleFormat(File file) {
@@ -436,17 +440,35 @@ public final class SubtitleUtilities {
 		return new MemoryFile(descriptor.getPath(), data);
 	}
 
-	public static String detectSubtitleLanguage(File file) throws IOException {
-		MemoryFile subtitleFile = new MemoryFile(file.getName(), ByteBuffer.wrap(readFile(file)));
-		String subtitleText = decodeSubtitles(subtitleFile).stream().map(SubtitleElement::getText).collect(Collectors.joining("\n"));
-
-		// detect language
-		List<DetectedLanguage> probabilities = createLanguageDetector().getProbabilities(subtitleText);
-
-		if (probabilities.size() > 0) {
-			return probabilities.get(0).getLocale().getLanguage();
+	public static Language detectSubtitleLanguage(File file) throws IOException {
+		// grep language from filename
+		Locale languageTag = releaseInfo.getSubtitleLanguageTag(getName(file));
+		if (languageTag != null) {
+			return Language.getLanguage(languageTag);
 		}
+
+		// check if file name matches a language name (e.g. English.srt)
+		Language languageName = Language.findLanguage(getName(file));
+		if (languageName != null) {
+			return languageName;
+		}
+
+		// detect language from subtitle text content
+		MemoryFile data = new MemoryFile(file.getName(), ByteBuffer.wrap(readFile(file)));
+		List<DetectedLanguage> options = detectSubtitleLanguage(data);
+		if (options.size() > 0) {
+			return Language.getLanguage(options.get(0).getLocale().getLanguage());
+		}
+
 		return null;
+	}
+
+	public static List<DetectedLanguage> detectSubtitleLanguage(MemoryFile file) throws IOException {
+		// decode subtitles
+		String text = decodeSubtitles(file).stream().map(SubtitleElement::getText).collect(Collectors.joining("\n"));
+
+		// detect text language
+		return createLanguageDetector().getProbabilities(text);
 	}
 
 	private static LanguageDetectorBuilder languageDetector;
@@ -461,9 +483,6 @@ public final class SubtitleUtilities {
 		return languageDetector.build();
 	}
 
-	/**
-	 * Dummy constructor to prevent instantiation.
-	 */
 	private SubtitleUtilities() {
 		throw new UnsupportedOperationException();
 	}

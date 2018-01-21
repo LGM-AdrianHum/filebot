@@ -19,12 +19,12 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeMap;
@@ -142,8 +142,8 @@ class MovieMatcher implements AutoCompleteMatcher {
 						}
 					}
 				}
-			} catch (NoSuchElementException e) {
-				debug.log(Level.WARNING, "Failed to grep IMDbID: " + nfo.getName());
+			} catch (Exception e) {
+				debug.log(Level.WARNING, "Failed to grep IMDbID: " + nfo.getName(), e);
 			}
 		}
 
@@ -159,30 +159,30 @@ class MovieMatcher implements AutoCompleteMatcher {
 		try {
 			List<Future<Map<File, List<Movie>>>> tasks = movieMatchFiles.stream().filter(f -> movieByFile.get(f) == null).map(f -> {
 				return workerThreadPool.submit(() -> {
-					if (strict) {
-						// in strict mode, only process movies that follow the name (year) pattern
-						List<Integer> year = parseMovieYear(getRelativePathTail(f, 3).getPath());
-						if (year.isEmpty() || isEpisode(f, true)) {
-							return (Map<File, List<Movie>>) EMPTY_MAP;
-						}
+					List<Movie> options = detectMovieWithYear(f, service, locale, strict);
 
-						// allow only movie matches where the the movie year matches the year pattern in the filename
-						return singletonMap(f, detectMovie(f, service, locale, strict).stream().filter(m -> year.contains(m.getYear())).collect(toList()));
-					} else {
-						// in non-strict mode just allow all options
-						return singletonMap(f, detectMovie(f, service, locale, strict));
+					// ignore files that cannot yield any acceptable matches (e.g. movie files without year in strict mode)
+					if (options == null) {
+						return (Map<File, List<Movie>>) EMPTY_MAP;
 					}
+
+					return singletonMap(f, options);
 				});
 			}).collect(toList());
 
 			for (Future<Map<File, List<Movie>>> future : tasks) {
 				for (Entry<File, List<Movie>> it : future.get().entrySet()) {
-					// auto-select movie or ask user
-					Movie movie = grabMovieName(it.getKey(), it.getValue(), strict, locale, autodetect, parent);
+					File file = it.getKey();
+					List<Movie> options = it.getValue();
 
-					// make sure to use language-specific movie object
+					// auto-select movie or ask user
+					Movie movie = grabMovieName(file, options, strict, locale, autodetect, parent);
+
+					// make sure to use language-specific movie object if possible
+					movie = getLocalizedMovie(service, movie, locale);
+
 					if (movie != null) {
-						movieByFile.put(it.getKey(), service.getMovieDescriptor(movie, locale));
+						movieByFile.put(file, movie);
 					}
 				}
 			}
@@ -191,28 +191,26 @@ class MovieMatcher implements AutoCompleteMatcher {
 		}
 
 		// map movies to (possibly multiple) files (in natural order)
-		Map<Movie, Set<File>> filesByMovie = movieByFile.entrySet().stream().collect(groupingBy(Entry::getValue, mapping(Entry::getKey, toCollection(TreeSet::new))));
+		Map<Movie, Set<File>> filesByMovie = movieByFile.entrySet().stream().collect(groupingBy(Entry::getValue, LinkedHashMap::new, mapping(Entry::getKey, toCollection(TreeSet::new))));
 
 		// collect all File/MoviePart matches
 		List<Match<File, ?>> matches = new ArrayList<Match<File, ?>>();
 
-		filesByMovie.forEach((movie, byMovie) -> {
-			mapByMediaFolder(byMovie).forEach((mediaFolder, byFolder) -> {
-				mapByExtension(byFolder).forEach((ext, moviePartFiles) -> {
-					// resolve movie parts
-					for (int i = 0; i < moviePartFiles.size(); i++) {
-						Movie moviePart = moviePartFiles.size() == 1 ? movie : new MoviePart(movie, i + 1, moviePartFiles.size());
-						matches.add(new Match<File, Movie>(moviePartFiles.get(i), moviePart.clone()));
+		filesByMovie.forEach((movie, fs) -> {
+			groupByMediaCharacteristics(fs).forEach(moviePartFiles -> {
+				// resolve movie parts
+				for (int i = 0; i < moviePartFiles.size(); i++) {
+					Movie moviePart = moviePartFiles.size() == 1 ? movie : new MoviePart(movie, i + 1, moviePartFiles.size());
+					matches.add(new Match<File, Movie>(moviePartFiles.get(i), moviePart.clone()));
 
-						// automatically add matches for derived files
-						List<File> derivates = derivatesByMovieFile.get(moviePartFiles.get(i));
-						if (derivates != null) {
-							for (File derivate : derivates) {
-								matches.add(new Match<File, Movie>(derivate, moviePart.clone()));
-							}
+					// automatically add matches for derived files
+					List<File> derivates = derivatesByMovieFile.get(moviePartFiles.get(i));
+					if (derivates != null) {
+						for (File derivate : derivates) {
+							matches.add(new Match<File, Movie>(derivate, moviePart.clone()));
 						}
 					}
-				});
+				}
 			});
 		});
 
@@ -413,10 +411,13 @@ class MovieMatcher implements AutoCompleteMatcher {
 
 		List<Match<File, ?>> matches = new ArrayList<Match<File, ?>>();
 		if (input != null && input.length() > 0) {
-			List<Movie> results = detectMovie(new File(input), service, locale, false);
-			for (Movie it : results) {
-				// make sure to retrieve language-specific movie descriptor
-				matches.add(new Match<File, Movie>(null, service.getMovieDescriptor(it, locale)));
+			for (Movie movie : detectMovie(new File(input), service, locale, false)) {
+				// make sure to use language-specific movie object if possible
+				movie = getLocalizedMovie(service, movie, locale);
+
+				if (movie != null) {
+					matches.add(new Match<File, Movie>(null, movie));
+				}
 			}
 		}
 		return matches;

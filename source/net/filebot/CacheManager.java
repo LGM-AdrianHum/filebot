@@ -13,7 +13,6 @@ import java.nio.file.StandardOpenOption;
 import java.util.Scanner;
 import java.util.logging.Level;
 
-import net.filebot.Settings.ApplicationFolder;
 import net.sf.ehcache.CacheException;
 import net.sf.ehcache.config.Configuration;
 import net.sf.ehcache.config.DiskStoreConfiguration;
@@ -57,7 +56,7 @@ public class CacheManager {
 	}
 
 	private void clearDiskStore(File cache) {
-		getChildren(cache).stream().filter(f -> f.isFile() && !f.getName().startsWith(".")).forEach(f -> {
+		getChildren(cache, FILES).stream().filter(f -> !f.getName().startsWith(".")).forEach(f -> {
 			try {
 				delete(f);
 			} catch (Exception e) {
@@ -67,30 +66,30 @@ public class CacheManager {
 	}
 
 	private File acquireDiskStore() throws IOException {
-		// prepare cache folder for this application instance
-		File cacheRoot = ApplicationFolder.Cache.getCanonicalFile();
-
 		for (int i = 0; i < 10; i++) {
-			File cache = new File(cacheRoot, Integer.toString(i));
+			File cache = ApplicationFolder.Cache.resolve(String.valueOf(i));
 
 			// make sure cache is readable and writable
 			createFolders(cache);
 
-			final File lockFile = new File(cache, ".lock");
+			File lockFile = new File(cache, ".lock");
 			boolean isNewCache = !lockFile.exists();
 
-			final FileChannel channel = FileChannel.open(lockFile.toPath(), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
-			final FileLock lock = channel.tryLock();
+			FileChannel channel = FileChannel.open(lockFile.toPath(), StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+			FileLock lock = channel.tryLock();
 
 			if (lock != null) {
 				debug.config(format("Using persistent disk cache %s", cache));
 
 				int applicationRevision = getApplicationRevisionNumber();
 				int cacheRevision = 0;
-				try {
-					cacheRevision = new Scanner(channel, "UTF-8").nextInt();
-				} catch (Exception e) {
-					// ignore
+
+				if (channel.size() > 0) {
+					try {
+						cacheRevision = new Scanner(channel, "UTF-8").nextInt();
+					} catch (Exception e) {
+						debug.log(Level.WARNING, e, e::toString);
+					}
 				}
 
 				if (cacheRevision != applicationRevision && applicationRevision > 0 && !isNewCache) {
@@ -122,7 +121,7 @@ public class CacheManager {
 		}
 
 		// serious error, abort
-		throw new IOException("Unable to acquire cache lock: " + cacheRoot);
+		throw new IOException("Unable to acquire cache lock: " + ApplicationFolder.Cache.get().getAbsolutePath());
 	}
 
 	private static class ShutdownHook extends Thread {

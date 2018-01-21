@@ -5,6 +5,7 @@ import static java.util.Collections.*;
 import static java.util.stream.Collectors.*;
 import static net.filebot.Logging.*;
 import static net.filebot.MediaTypes.*;
+import static net.filebot.WebServices.*;
 import static net.filebot.format.Define.*;
 import static net.filebot.format.ExpressionFormatMethods.*;
 import static net.filebot.hash.VerificationUtilities.*;
@@ -15,56 +16,62 @@ import static net.filebot.subtitle.SubtitleUtilities.*;
 import static net.filebot.util.FileUtilities.*;
 import static net.filebot.util.RegularExpressions.*;
 import static net.filebot.util.StringUtilities.*;
-import static net.filebot.web.EpisodeFormat.*;
+import static net.filebot.web.EpisodeUtilities.*;
 
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
-import java.util.Set;
-import java.util.SortedSet;
-import java.util.TreeSet;
-import java.util.concurrent.TimeUnit;
+import java.util.Optional;
+import java.util.function.Function;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
-import com.cedarsoftware.util.io.JsonWriter;
-
+import net.filebot.ApplicationFolder;
 import net.filebot.Cache;
 import net.filebot.CacheType;
 import net.filebot.Language;
 import net.filebot.MediaTypes;
 import net.filebot.MetaAttributeView;
+import net.filebot.Resource;
 import net.filebot.Settings;
-import net.filebot.Settings.ApplicationFolder;
-import net.filebot.WebServices;
 import net.filebot.hash.HashType;
+import net.filebot.media.MetaAttributes;
 import net.filebot.media.NamingStandard;
+import net.filebot.media.VideoFormat;
+import net.filebot.mediainfo.ImageMetadata;
 import net.filebot.mediainfo.MediaInfo;
 import net.filebot.mediainfo.MediaInfo.StreamKind;
 import net.filebot.mediainfo.MediaInfoException;
+import net.filebot.similarity.Normalization;
 import net.filebot.similarity.SimilarityComparator;
 import net.filebot.util.FileUtilities;
 import net.filebot.util.WeakValueHashMap;
 import net.filebot.web.AudioTrack;
 import net.filebot.web.Episode;
-import net.filebot.web.EpisodeListProvider;
+import net.filebot.web.EpisodeFormat;
 import net.filebot.web.Movie;
+import net.filebot.web.MovieInfo;
 import net.filebot.web.MoviePart;
 import net.filebot.web.MultiEpisode;
-import net.filebot.web.SearchResult;
 import net.filebot.web.SeriesInfo;
 import net.filebot.web.SimpleDate;
 import net.filebot.web.SortOrder;
-import net.filebot.web.TMDbClient.MovieInfo;
 import net.filebot.web.TheTVDBSeriesInfo;
 
 public class MediaBindingBean {
@@ -74,10 +81,9 @@ public class MediaBindingBean {
 	private final Map<File, ?> context;
 
 	private MediaInfo mediaInfo;
-	private Object metaInfo;
 
 	public MediaBindingBean(Object infoObject, File mediaFile) {
-		this(infoObject, mediaFile, singletonMap(mediaFile, infoObject));
+		this(infoObject, mediaFile, null);
 	}
 
 	public MediaBindingBean(Object infoObject, File mediaFile, Map<File, ?> context) {
@@ -86,10 +92,12 @@ public class MediaBindingBean {
 		this.context = context;
 	}
 
+	@Define("object")
 	public Object getInfoObject() {
 		return infoObject;
 	}
 
+	@Define("file")
 	public File getFileObject() {
 		return mediaFile;
 	}
@@ -106,10 +114,8 @@ public class MediaBindingBean {
 			return getEpisode().getSeriesName();
 		else if (infoObject instanceof Movie)
 			return getMovie().getName();
-		else if (infoObject instanceof AudioTrack && getAlbumArtist() != null)
-			return getAlbumArtist();
 		else if (infoObject instanceof AudioTrack)
-			return getArtist();
+			return getAlbumArtist() != null ? getAlbumArtist() : getArtist();
 		else if (infoObject instanceof File)
 			return FileUtilities.getName((File) infoObject);
 
@@ -122,21 +128,26 @@ public class MediaBindingBean {
 			return getEpisode().getSeriesInfo().getStartDate().getYear();
 		if (infoObject instanceof Movie)
 			return getMovie().getYear();
-		if (infoObject instanceof AudioTrack)
-			return getReleaseDate().getYear();
 
-		return null;
+		return getReleaseDate().getYear();
 	}
 
 	@Define("ny")
 	public String getNameWithYear() {
 		String n = getName().toString();
 		String y = " (" + getYear().toString() + ")";
-		return n.endsWith(y) ? n : n + y; // account for TV Shows that contain the year in the series name, e.g. Doctor Who (2005)
+
+		// account for TV Shows that contain the year in the series name, e.g. Doctor Who (2005)
+		return n.endsWith(y) ? n : n + y;
 	}
 
 	@Define("s")
 	public Integer getSeasonNumber() {
+		// look up season numbers via TheTVDB for AniDB episode data
+		if (isAnime(getEpisode())) {
+			return getSeasonEpisode().getSeason();
+		}
+
 		return getEpisode().getSeason();
 	}
 
@@ -148,51 +159,75 @@ public class MediaBindingBean {
 	@Define("es")
 	public List<Integer> getEpisodeNumbers() {
 		return getEpisodes().stream().map(it -> {
-			return it.getEpisode() == null ? it.getSpecial() == null ? -1 : it.getSpecial() : it.getEpisode();
-		}).collect(toList());
+			return it.getEpisode() == null ? it.getSpecial() == null ? null : it.getSpecial() : it.getEpisode();
+		}).filter(Objects::nonNull).collect(toList());
+	}
+
+	@Define("e00")
+	public String getE00() {
+		if (isRegularEpisode())
+			return getEpisodeNumbers().stream().map(i -> String.format("%02d", i)).collect(joining("-"));
+		else
+			return "Special " + join(getEpisodeNumbers(), "-");
 	}
 
 	@Define("sxe")
 	public String getSxE() {
-		return SeasonEpisode.formatSxE(getEpisode());
+		return EpisodeFormat.SeasonEpisode.formatSxE(getSeasonEpisode()); // try to convert absolute numbers to SxE numbers
 	}
 
 	@Define("s00e00")
 	public String getS00E00() {
-		try {
-			return SeasonEpisode.formatS00E00(getSeasonEpisode()); // try to convert absolute numbers to SxE numbers
-		} catch (Exception e) {
-			debug.warning(e::toString);
-		}
-		return SeasonEpisode.formatS00E00(getEpisode());
+		return EpisodeFormat.SeasonEpisode.formatS00E00(getSeasonEpisode()); // try to convert absolute numbers to SxE numbers
 	}
 
 	@Define("t")
 	public String getTitle() {
-		if (infoObject instanceof AudioTrack) {
-			return getMusic().getTrackTitle() != null ? getMusic().getTrackTitle() : getMusic().getTitle();
+		String t = null;
+
+		if (infoObject instanceof Episode) {
+			t = infoObject instanceof MultiEpisode ? EpisodeFormat.SeasonEpisode.formatMultiTitle(getEpisodes()) : getEpisode().getTitle(); // implicit support for multi-episode title formatting
+		} else if (infoObject instanceof Movie) {
+			t = getMovieInfo().getTagline();
+		} else if (infoObject instanceof AudioTrack) {
+			t = getMusic().getTrackTitle() != null ? getMusic().getTrackTitle() : getMusic().getTitle();
 		}
 
 		// enforce title length limit by default
-		return truncateText(SeasonEpisode.formatMultiTitle(getEpisodes()), NamingStandard.TITLE_MAX_LENGTH);
+		return truncateText(t, NamingStandard.TITLE_MAX_LENGTH);
 	}
 
 	@Define("d")
 	public SimpleDate getReleaseDate() {
-		if (infoObject instanceof Episode) {
+		if (infoObject instanceof Episode)
 			return getEpisode().getAirdate();
-		}
-		if (infoObject instanceof Movie) {
-			return (SimpleDate) getMetaInfo().getProperty("released");
-		}
-		if (infoObject instanceof AudioTrack) {
+		if (infoObject instanceof Movie)
+			return getMovieInfo().getReleased();
+		if (infoObject instanceof AudioTrack)
 			return getMusic().getAlbumReleaseDate();
-		}
-		if (infoObject instanceof File) {
-			return new SimpleDate(getCreationDate(((File) infoObject)));
+		if (infoObject instanceof File)
+			return new SimpleDate(getTimeStamp());
+
+		return null;
+	}
+
+	@Define("dt")
+	public ZonedDateTime getTimeStamp() {
+		File f = getMediaFile();
+
+		// try EXIF Date-Taken for image files or File Last-Modified for generic files
+		try {
+			return new ImageMetadata(f).getDateTaken().get();
+		} catch (Exception e) {
+			// ignore and default to file creation date
 		}
 
-		// no date info for the model
+		try {
+			return Instant.ofEpochMilli(getCreationDate(f)).atZone(ZoneOffset.systemDefault());
+		} catch (Exception e) {
+			debug.warning(e::toString);
+		}
+
 		return null;
 	}
 
@@ -202,14 +237,18 @@ public class MediaBindingBean {
 	}
 
 	@Define("age")
-	public Number getAgeInDays() {
+	public Long getAgeInDays() throws Exception {
 		SimpleDate releaseDate = getReleaseDate();
+
 		if (releaseDate != null) {
-			long days = TimeUnit.MILLISECONDS.toDays(System.currentTimeMillis() - releaseDate.getTimeStamp());
+			// avoid time zone issues by interpreting all dates and times as UTC
+			long days = ChronoUnit.DAYS.between(releaseDate.toLocalDate().atStartOfDay(ZoneOffset.UTC).toInstant(), Instant.now());
+
 			if (days >= 0) {
 				return days;
 			}
 		}
+
 		return null;
 	}
 
@@ -235,72 +274,54 @@ public class MediaBindingBean {
 
 	@Define("alias")
 	public List<String> getAliasNames() {
-		if (infoObject instanceof Movie) {
+		if (infoObject instanceof Movie)
 			return asList(getMovie().getAliasNames());
-		}
-		if (infoObject instanceof Episode) {
+		if (infoObject instanceof Episode)
 			return getSeriesInfo().getAliasNames();
-		}
-		return emptyList();
+
+		return null;
 	}
 
 	@Define("primaryTitle")
-	public String getPrimaryTitle() throws Exception {
-		if (infoObject instanceof Movie) {
-			return WebServices.TheMovieDB.getMovieInfo(getMovie(), Locale.ENGLISH, false).getOriginalName();
-		}
+	public String getPrimaryTitle() {
+		if (infoObject instanceof Movie)
+			return getPrimaryMovieInfo().getOriginalName();
+		if (infoObject instanceof Episode)
+			return getPrimarySeriesInfo().getName(); // force English series name for TheTVDB data or default to SeriesInfo name (for AniDB episode data this would be the primary title)
 
-		if (infoObject instanceof Episode) {
-			// force English series name for TheTVDB data
-			if (WebServices.TheTVDB.getIdentifier().equals(getSeriesInfo().getDatabase())) {
-				return WebServices.TheTVDB.getSeriesInfo(getSeriesInfo().getId(), Locale.ENGLISH).getName();
-			}
+		return null;
+	}
 
-			// default to series info name (for anime this would be the primary title)
-			return getSeriesInfo().getName();
-		}
+	@Define("id")
+	public Object getId() throws Exception {
+		if (infoObject instanceof Episode)
+			return getEpisode().getSeriesInfo().getId();
+		if (infoObject instanceof Movie)
+			return getMovie().getId();
+		if (infoObject instanceof AudioTrack)
+			return getMusic().getMBID();
 
 		return null;
 	}
 
 	@Define("tmdbid")
-	public String getTmdbId() throws Exception {
-		int tmdbid = getMovie().getTmdbId();
+	public String getTmdbId() {
+		if (getMovie().getTmdbId() > 0)
+			return String.valueOf(getMovie().getTmdbId());
+		if (getMovie().getImdbId() > 0)
+			return getPrimaryMovieInfo().getId().toString(); // lookup IMDbID for TMDbID
 
-		if (tmdbid <= 0) {
-			if (getMovie().getImdbId() <= 0) {
-				return null;
-			}
-
-			// lookup IMDbID for TMDbID
-			try {
-				tmdbid = WebServices.TheMovieDB.getMovieInfo(getMovie(), Locale.ENGLISH, false).getId();
-			} catch (FileNotFoundException e) {
-				return null;
-			}
-		}
-
-		return String.valueOf(tmdbid);
+		return null;
 	}
 
 	@Define("imdbid")
-	public String getImdbId() throws Exception {
-		Integer imdbid = getMovie().getImdbId();
+	public String getImdbId() {
+		if (getMovie().getImdbId() > 0)
+			return String.format("tt%07d", getMovie().getImdbId());
+		if (getMovie().getTmdbId() > 0)
+			return String.format("tt%07d", getPrimaryMovieInfo().getImdbId()); // lookup IMDbID for TMDbID
 
-		if (imdbid <= 0) {
-			if (getMovie().getTmdbId() <= 0) {
-				return null;
-			}
-
-			// lookup IMDbID for TMDbID
-			try {
-				imdbid = WebServices.TheMovieDB.getMovieInfo(getMovie(), Locale.ENGLISH, false).getImdbId();
-			} catch (FileNotFoundException e) {
-				return null;
-			}
-		}
-
-		return imdbid != null ? String.format("tt%07d", imdbid) : null;
+		return null;
 	}
 
 	@Define("vc")
@@ -309,7 +330,7 @@ public class MediaBindingBean {
 		String codec = getMediaInfo(StreamKind.Video, 0, "Encoded_Library_Name", "Encoded_Library/Name", "CodecID/Hint", "Format");
 
 		// get first token (e.g. DivX 5 => DivX)
-		return SPACE.splitAsStream(codec).findFirst().get();
+		return tokenize(codec).findFirst().orElse(null);
 	}
 
 	@Define("ac")
@@ -318,7 +339,7 @@ public class MediaBindingBean {
 		String codec = getMediaInfo(StreamKind.Audio, 0, "CodecID/Hint", "Format");
 
 		// remove punctuation (e.g. AC-3 => AC3)
-		return codec.replaceAll("\\p{Punct}", "");
+		return normalizePunctuation(codec, "", "");
 	}
 
 	@Define("cf")
@@ -327,28 +348,16 @@ public class MediaBindingBean {
 		String extensions = getMediaInfo(StreamKind.General, 0, "Codec/Extensions", "Format");
 
 		// get first extension
-		return SPACE.splitAsStream(extensions).findFirst().get().toLowerCase();
+		return tokenize(extensions).map(String::toLowerCase).findFirst().get();
 	}
 
 	@Define("vf")
 	public String getVideoFormat() {
-		int width = Integer.parseInt(getMediaInfo(StreamKind.Video, 0, "Width"));
-		int height = Integer.parseInt(getMediaInfo(StreamKind.Video, 0, "Height"));
+		int w = Integer.parseInt(getMediaInfo(StreamKind.Video, 0, "Width"));
+		int h = Integer.parseInt(getMediaInfo(StreamKind.Video, 0, "Height"));
 
-		int ns = 0;
-		int[] ws = new int[] { 15360, 7680, 3840, 1920, 1280, 1024, 854, 852, 720, 688, 512, 320 };
-		int[] hs = new int[] { 8640, 4320, 2160, 1080, 720, 576, 576, 480, 480, 360, 240, 240 };
-		for (int i = 0; i < ws.length - 1; i++) {
-			if ((width >= ws[i] || height >= hs[i]) || (width > ws[i + 1] && height > hs[i + 1])) {
-				ns = hs[i];
-				break;
-			}
-		}
-		if (ns > 0) {
-			// e.g. 720p, nobody actually wants files to be tagged as interlaced, e.g. 720i
-			return String.format("%dp", ns);
-		}
-		return null; // video too small
+		// e.g. 720p, nobody actually wants files to be tagged as interlaced, e.g. 720i
+		return String.format("%dp", VideoFormat.DEFAULT_GROUPS.guessFormat(w, h));
 	}
 
 	@Define("hpi")
@@ -356,8 +365,11 @@ public class MediaBindingBean {
 		String height = getMediaInfo(StreamKind.Video, 0, "Height");
 		String scanType = getMediaInfo(StreamKind.Video, 0, "ScanType");
 
+		// progressive by default if ScanType is undefined
+		String p = scanType.codePoints().map(Character::toLowerCase).mapToObj(Character::toChars).map(String::valueOf).findFirst().orElse("p");
+
 		// e.g. 720p
-		return height + Character.toLowerCase(scanType.charAt(0));
+		return height + p;
 	}
 
 	@Define("af")
@@ -365,7 +377,7 @@ public class MediaBindingBean {
 		String channels = getMediaInfo(StreamKind.Audio, 0, "Channel(s)_Original", "Channel(s)");
 
 		// get first number, e.g. 6ch
-		return SPACE.splitAsStream(channels).findFirst().get() + "ch";
+		return String.format("%dch", matchInteger(channels));
 	}
 
 	@Define("channels")
@@ -373,22 +385,27 @@ public class MediaBindingBean {
 		String channels = getMediaInfo(StreamKind.Audio, 0, "ChannelPositions/String2", "Channel(s)_Original", "Channel(s)");
 
 		// e.g. ChannelPositions/String2: 3/2/2.1 / 3/2/0.1 (one audio stream may contain multiple multi-channel streams)
-		double d = SPACE.splitAsStream(channels).mapToDouble(s -> {
-			return SLASH.splitAsStream(s).mapToDouble(Double::parseDouble).reduce(0, (a, b) -> a + b);
+		double d = tokenize(channels).mapToDouble(s -> {
+			try {
+				return tokenize(s, SLASH).mapToDouble(Double::parseDouble).reduce(0, (a, b) -> a + b);
+			} catch (NumberFormatException e) {
+				return 0;
+			}
 		}).filter(it -> it > 0).max().getAsDouble();
 
 		return BigDecimal.valueOf(d).setScale(1, RoundingMode.HALF_UP).toPlainString();
 	}
 
+	@Define("aco")
+	public String getAudioChannelObjects() {
+		return getMediaInfo(StreamKind.Audio, "Codec_Profile").filter(Objects::nonNull).map(s -> {
+			return SLASH.splitAsStream(s).findFirst().orElse(null);
+		}).filter(Objects::nonNull).map(String::trim).filter(s -> s.length() > 0).findFirst().orElse(null);
+	}
+
 	@Define("resolution")
 	public String getVideoResolution() {
-		List<Integer> dim = getDimension();
-
-		if (dim.contains(null))
-			return null;
-
-		// e.g. 1280x720
-		return join(dim, "x");
+		return join(getDimension(), "x"); // e.g. 1280x720
 	}
 
 	@Define("bitdepth")
@@ -406,25 +423,46 @@ public class MediaBindingBean {
 		return (float) dim.get(0) / dim.get(1) > 1.37f ? "WS" : null;
 	}
 
-	@Define("sdhd")
+	@Define("hd")
 	public String getVideoDefinitionCategory() {
 		List<Integer> dim = getDimension();
 
-		// SD (less than 720 lines) or HD (more than 720 lines)
-		return dim.get(0) >= 1280 || dim.get(1) >= 720 ? "HD" : "SD";
+		// UHD
+		if (dim.get(0) >= 3840 || dim.get(1) >= 2160)
+			return "UHD";
+
+		// HD
+		if (dim.get(0) >= 1280 || dim.get(1) >= 720)
+			return "HD";
+
+		// SD
+		return "SD";
 	}
 
 	@Define("dim")
 	public List<Integer> getDimension() {
-		String width = getMediaInfo(StreamKind.Video, 0, "Width");
-		String height = getMediaInfo(StreamKind.Video, 0, "Height");
+		// collect value from Video Stream 0 or Image Stream 0
+		return Stream.of(StreamKind.Video, StreamKind.Image).map(k -> {
+			// collect Width and Height as Integer List
+			return Stream.of("Width", "Height").map(p -> getMediaInfo().get(k, 0, p)).filter(s -> s.length() > 0).map(Integer::parseInt).collect(toList());
+		}).filter(d -> d.size() == 2).findFirst().orElse(null);
+	}
 
-		return asList(Integer.parseInt(width), Integer.parseInt(height));
+	@Define("width")
+	public Integer getWidth() {
+		return getDimension().get(0);
+	}
+
+	@Define("height")
+	public Integer getHeight() {
+		return getDimension().get(1);
 	}
 
 	@Define("original")
 	public String getOriginalFileName() {
-		return getOriginalFileName(getMediaFile());
+		String name = xattr.getOriginalName(getMediaFile());
+
+		return name != null ? getNameWithoutExtension(name) : null;
 	}
 
 	@Define("xattr")
@@ -438,13 +476,9 @@ public class MediaBindingBean {
 		File inferredMediaFile = getInferredMediaFile();
 
 		// try to get checksum from file name
-		for (String filename : new String[] { getOriginalFileName(inferredMediaFile), inferredMediaFile.getName() }) {
-			if (filename != null) {
-				String checksum = getEmbeddedChecksum(filename);
-				if (checksum != null) {
-					return checksum;
-				}
-			}
+		Optional<String> embeddedChecksum = stream(getFileNames(inferredMediaFile)).map(Normalization::getEmbeddedChecksum).filter(Objects::nonNull).findFirst();
+		if (embeddedChecksum.isPresent()) {
+			return embeddedChecksum.get();
 		}
 
 		// try to get checksum from sfv file
@@ -466,7 +500,7 @@ public class MediaBindingBean {
 
 		// calculate checksum from file
 		Cache cache = Cache.getCache("crc32", CacheType.Ephemeral);
-		return (String) cache.computeIfAbsent(inferredMediaFile.getCanonicalPath(), it -> crc32(inferredMediaFile));
+		return (String) cache.computeIfAbsent(inferredMediaFile, it -> crc32(inferredMediaFile));
 	}
 
 	@Define("fn")
@@ -483,54 +517,36 @@ public class MediaBindingBean {
 
 	@Define("source")
 	public String getVideoSource() {
-		// use inferred media file
-		File inferredMediaFile = getInferredMediaFile();
-
-		// look for video source patterns in media file and it's parent folder
-		return releaseInfo.getVideoSource(inferredMediaFile.getParent(), inferredMediaFile.getName(), getOriginalFileName(inferredMediaFile));
+		// look for video source patterns in media file and it's parent folder (use inferred media file)
+		return releaseInfo.getVideoSource(getFileNames(getInferredMediaFile()));
 	}
 
 	@Define("tags")
 	public List<String> getVideoTags() {
-		// use inferred media file
-		File inferredMediaFile = getInferredMediaFile();
-
-		// look for video source patterns in media file and it's parent folder
-		List<String> matches = releaseInfo.getVideoTags(inferredMediaFile.getParent(), inferredMediaFile.getName(), getOriginalFileName(inferredMediaFile));
+		// look for video source patterns in media file and it's parent folder (use inferred media file)
+		List<String> matches = releaseInfo.getVideoTags(getFileNames(getInferredMediaFile()));
 		if (matches.isEmpty()) {
 			return null;
 		}
 
-		Set<String> tags = new TreeSet<String>(String.CASE_INSENSITIVE_ORDER);
-		for (String m : matches) {
-			// heavy normalization of whatever pattern was matched with the regex pattern
-			tags.add(lowerTrail(upperInitial(normalizePunctuation(normalizeSpace(m, " ")))));
-		}
-		return new ArrayList<String>(tags);
-
+		// heavy normalization for whatever text was captured with the tags pattern
+		return matches.stream().map(s -> {
+			return lowerTrail(upperInitial(normalizePunctuation(s)));
+		}).sorted().distinct().collect(toList());
 	}
 
 	@Define("s3d")
 	public String getStereoscopic3D() {
-		return releaseInfo.getStereoscopic3D(getFileName());
+		return releaseInfo.getStereoscopic3D(getFileNames(getInferredMediaFile()));
 	}
 
 	@Define("group")
 	public String getReleaseGroup() throws Exception {
-		// use inferred media file
-		File inferredMediaFile = getInferredMediaFile();
-
-		// consider foldername, filename and original filename
-		String[] filenames = new String[] { inferredMediaFile.getParentFile().getName(), getNameWithoutExtension(inferredMediaFile.getName()), getOriginalFileName(inferredMediaFile) };
-
 		// reduce false positives by removing the know titles from the name
-		Pattern nonGroupPattern = releaseInfo.getCustomRemovePattern(getKeywords());
-		for (int i = 0; i < filenames.length; i++) {
-			if (filenames[i] == null)
-				continue;
+		Pattern[] nonGroupPattern = { getKeywordExcludePattern(), releaseInfo.getVideoSourcePattern(), releaseInfo.getVideoFormatPattern(true), releaseInfo.getResolutionPattern(), releaseInfo.getStructureRootPattern() };
 
-			filenames[i] = releaseInfo.clean(filenames[i], nonGroupPattern, releaseInfo.getVideoSourcePattern(), releaseInfo.getVideoFormatPattern(true), releaseInfo.getResolutionPattern(), releaseInfo.getStructureRootPattern());
-		}
+		// consider foldername, filename and original filename of inferred media file
+		String[] filenames = stream(getFileNames(getInferredMediaFile())).map(s -> releaseInfo.clean(s, nonGroupPattern)).filter(s -> s.length() > 0).toArray(String[]::new);
 
 		// look for release group names in media file and it's parent folder
 		return releaseInfo.getReleaseGroup(filenames);
@@ -544,8 +560,8 @@ public class MediaBindingBean {
 
 		Language language = getLanguageTag();
 		if (language != null) {
-			String tag = '.' + language.getISO3B();
-			String category = releaseInfo.getSubtitleCategoryTag(FileUtilities.getName(getMediaFile()), getOriginalFileName(getMediaFile()));
+			String tag = '.' + language.getISO3B(); // Plex only supports ISO 639-2/B language codes
+			String category = releaseInfo.getSubtitleCategoryTag(getFileNames(getMediaFile()));
 			if (category != null) {
 				return tag + '.' + category;
 			}
@@ -557,17 +573,18 @@ public class MediaBindingBean {
 
 	@Define("lang")
 	public Language getLanguageTag() throws Exception {
-		Locale languageSuffix = releaseInfo.getSubtitleLanguageTag(FileUtilities.getName(getMediaFile()), getOriginalFileName(getMediaFile()));
-		if (languageSuffix != null) {
-			return Language.getLanguage(languageSuffix);
+		// grep language from filename
+		Locale languageTag = releaseInfo.getSubtitleLanguageTag(getFileNames(getMediaFile()));
+		if (languageTag != null) {
+			return Language.getLanguage(languageTag);
 		}
 
-		// try to auto-detect subtitle language
+		// detect language from subtitle text content
 		if (SUBTITLE_FILES.accept(getMediaFile())) {
 			try {
-				return Language.getLanguage(detectSubtitleLanguage(getMediaFile()));
-			} catch (Throwable e) {
-				throw new RuntimeException("Failed to auto-detect subtitle language: " + e, e);
+				return detectSubtitleLanguage(getMediaFile());
+			} catch (Exception e) {
+				throw new RuntimeException("Failed to detect subtitle language: " + e, e);
 			}
 		}
 
@@ -575,116 +592,169 @@ public class MediaBindingBean {
 	}
 
 	@Define("languages")
-	public List<String> getSpokenLanguages() {
+	public List<Language> getSpokenLanguages() {
 		if (infoObject instanceof Movie) {
-			List<Locale> languages = (List<Locale>) getMetaInfo().getProperty("spokenLanguages");
-			return languages.stream().map(it -> it.getDisplayLanguage(Locale.ENGLISH)).collect(toList());
+			List<Locale> languages = getMovieInfo().getSpokenLanguages();
+			return languages.stream().map(Language::getLanguage).filter(Objects::nonNull).collect(toList());
 		}
 		if (infoObject instanceof Episode) {
 			String language = getSeriesInfo().getLanguage();
-			return singletonList(new Locale(language).getDisplayLanguage(Locale.ENGLISH));
+			return Stream.of(language).map(Language::findLanguage).filter(Objects::nonNull).collect(toList());
 		}
 		return null;
 	}
 
+	@Define("runtime")
+	public Integer getRuntime() {
+		if (infoObject instanceof Movie)
+			return getMovieInfo().getRuntime();
+		if (infoObject instanceof Episode)
+			return getSeriesInfo().getRuntime();
+
+		return null;
+	}
+
 	@Define("actors")
-	public Object getActors() {
-		return getMetaInfo().getProperty("actors");
+	public List<String> getActors() throws Exception {
+		if (infoObject instanceof Movie)
+			return getMovieInfo().getActors();
+		if (infoObject instanceof Episode)
+			return ExpressionFormatMethods.getActors(getSeriesInfo()); // use TheTVDB API v2 to retrieve actors info
+
+		return null;
 	}
 
 	@Define("genres")
-	public Object getGenres() {
-		return getMetaInfo().getProperty("genres");
+	public List<String> getGenres() {
+		if (infoObject instanceof Movie)
+			return getMovieInfo().getGenres();
+		if (infoObject instanceof Episode)
+			return getSeriesInfo().getGenres();
+		if (infoObject instanceof AudioTrack)
+			return Stream.of(getMusic().getGenre()).filter(Objects::nonNull).collect(toList());
+
+		return null;
 	}
 
 	@Define("genre")
 	public String getPrimaryGenre() {
-		return ((Iterable<?>) getGenres()).iterator().next().toString();
+		return getGenres().iterator().next();
 	}
 
 	@Define("director")
-	public Object getDirector() {
-		return getMetaInfo().getProperty("director");
+	public String getDirector() throws Exception {
+		if (infoObject instanceof Movie)
+			return getMovieInfo().getDirector();
+		if (infoObject instanceof Episode)
+			return ExpressionFormatMethods.getInfo(getEpisode()).getDirector(); // use TheTVDB API v2 to retrieve extended episode info
+
+		return null;
 	}
 
 	@Define("certification")
-	public Object getCertification() {
-		return getMetaInfo().getProperty("certification");
+	public String getCertification() {
+		if (infoObject instanceof Movie)
+			return getMovieInfo().getCertification();
+		if (infoObject instanceof Episode)
+			return getSeriesInfo().getCertification();
+
+		return null;
 	}
 
 	@Define("rating")
-	public Object getRating() {
-		return getMetaInfo().getProperty("rating");
+	public Double getRating() {
+		if (infoObject instanceof Movie)
+			return getMovieInfo().getRating();
+		if (infoObject instanceof Episode)
+			return getSeriesInfo().getRating();
+
+		return null;
+	}
+
+	@Define("votes")
+	public Integer getVotes() {
+		if (infoObject instanceof Movie)
+			return getMovieInfo().getVotes();
+		if (infoObject instanceof Episode)
+			return getSeriesInfo().getRatingCount();
+
+		return null;
 	}
 
 	@Define("collection")
-	public Object getCollection() {
-		return getMetaInfo().getProperty("collection");
+	public String getCollection() {
+		if (infoObject instanceof Movie)
+			return getMovieInfo().getCollection();
+
+		return null;
 	}
 
 	@Define("info")
 	public synchronized AssociativeScriptObject getMetaInfo() {
-		if (metaInfo == null) {
-			try {
-				if (infoObject instanceof Episode) {
-					metaInfo = getSeriesInfo();
-				} else if (infoObject instanceof Movie) {
-					if (getMovie().getTmdbId() > 0) {
-						metaInfo = WebServices.TheMovieDB.getMovieInfo(getMovie(), getMovie().getLanguage() == null ? Locale.ENGLISH : getMovie().getLanguage(), true);
-					} else if (getMovie().getImdbId() > 0) {
-						metaInfo = WebServices.OMDb.getMovieInfo(getMovie());
-					}
-				}
-			} catch (Exception e) {
-				throw new RuntimeException("Failed to retrieve extended metadata: " + infoObject, e);
-			}
-		}
+		if (infoObject instanceof Movie)
+			return createPropertyBindings(getMovieInfo());
+		if (infoObject instanceof Episode)
+			return createPropertyBindings(getSeriesInfo());
 
-		if (metaInfo == null) {
-			throw new UnsupportedOperationException("Extended metadata not available");
-		}
-
-		return createPropertyBindings(metaInfo);
+		return null;
 	}
 
 	@Define("omdb")
-	public synchronized AssociativeScriptObject getOmdbApiInfo() {
-		Object metaInfo = null;
+	public synchronized AssociativeScriptObject getOmdbApiInfo() throws Exception {
+		if (infoObject instanceof Movie) {
+			if (getMovie().getImdbId() > 0) {
+				return createPropertyBindings(OMDb.getMovieInfo(getMovie()));
+			}
+			if (getMovie().getTmdbId() > 0) {
+				Integer imdbId = getPrimaryMovieInfo().getImdbId();
+				return createPropertyBindings(OMDb.getMovieInfo(new Movie(imdbId)));
+			}
+		}
 
-		try {
+		if (infoObject instanceof Episode) {
+			TheTVDBSeriesInfo info = (TheTVDBSeriesInfo) getPrimarySeriesInfo();
+			int imdbId = matchInteger(info.getImdbId());
+			return createPropertyBindings(OMDb.getMovieInfo(new Movie(imdbId)));
+		}
+
+		return null;
+	}
+
+	@Define("order")
+	public DynamicBindings getSortOrderObject() {
+		return new DynamicBindings(SortOrder::names, k -> {
 			if (infoObject instanceof Episode) {
-				if (WebServices.TheTVDB.getIdentifier().equals(getSeriesInfo().getDatabase())) {
-					TheTVDBSeriesInfo extendedSeriesInfo = WebServices.TheTVDB.getSeriesInfo(getSeriesInfo().getId(), Locale.ENGLISH);
-					if (extendedSeriesInfo.getImdbId() != null) {
-						metaInfo = WebServices.OMDb.getMovieInfo(new Movie(grepImdbId(extendedSeriesInfo.getImdbId()).iterator().next()));
-					}
-				}
+				SortOrder order = SortOrder.forName(k);
+				Episode episode = fetchEpisode(getEpisode(), order, null);
+				return createBindingObject(episode);
 			}
-			if (infoObject instanceof Movie) {
-				if (getMovie().getTmdbId() > 0) {
-					MovieInfo movieInfo = WebServices.TheMovieDB.getMovieInfo(getMovie(), Locale.ENGLISH, false);
-					if (movieInfo.getImdbId() != null) {
-						metaInfo = WebServices.OMDb.getMovieInfo(new Movie(movieInfo.getImdbId()));
-					}
-				} else if (getMovie().getImdbId() > 0) {
-					metaInfo = WebServices.OMDb.getMovieInfo(getMovie());
-				}
+			return undefined(k);
+		});
+	}
+
+	@Define("localize")
+	public DynamicBindings getLocalizedInfoObject() {
+		return new DynamicBindings(Language::availableLanguages, k -> {
+			Language language = Language.findLanguage(k);
+
+			if (language != null && infoObject instanceof Movie) {
+				Movie movie = TheMovieDB.getMovieDescriptor(getMovie(), language.getLocale());
+				return createBindingObject(movie);
 			}
-		} catch (Exception e) {
-			throw new RuntimeException("Failed to retrieve extended metadata: " + infoObject, e);
-		}
 
-		if (metaInfo == null) {
-			throw new UnsupportedOperationException("Extended metadata not available");
-		}
+			if (language != null && infoObject instanceof Episode) {
+				Episode episode = fetchEpisode(getEpisode(), null, language.getLocale());
+				return createBindingObject(episode);
+			}
 
-		return createPropertyBindings(metaInfo);
+			return undefined(k);
+		});
 	}
 
 	@Define("az")
 	public String getSortInitial() {
 		try {
-			return sortInitial(getCollection().toString());
+			return sortInitial(getCollection());
 		} catch (Exception e) {
 			return sortInitial(getName());
 		}
@@ -692,100 +762,83 @@ public class MediaBindingBean {
 
 	@Define("anime")
 	public boolean isAnimeEpisode() {
-		return WebServices.AniDB.getIdentifier().equals(getEpisode().getSeriesInfo().getDatabase());
+		return getEpisodes().stream().anyMatch(it -> isAnime(it));
 	}
 
 	@Define("regular")
 	public boolean isRegularEpisode() {
-		return getEpisodes().stream().allMatch(it -> it.getEpisode() != null && it.getSpecial() == null);
-	}
-
-	@Define("abs2sxe")
-	public Episode getSeasonEpisode() throws Exception {
-		// match AniDB episode to TheTVDB episode
-		if (isAnimeEpisode()) {
-			SeriesInfo seriesInfo = getEpisode().getSeriesInfo();
-			Locale locale = new Locale(seriesInfo.getLanguage());
-
-			// episode may be a multi-episode
-			List<Episode> episode = getEpisodes();
-
-			for (SearchResult series : WebServices.TheTVDB.search(seriesInfo.getName(), locale)) {
-				// sanity check
-				if (!series.getEffectiveNames().contains(seriesInfo.getName())) {
-					continue;
-				}
-
-				// match by absolute number or airdate if possible, default to absolute number otherwise
-				List<Episode> airdateEpisodeList = WebServices.TheTVDB.getEpisodeList(series, SortOrder.Airdate, locale);
-				List<Episode> airdateEpisode = episode.stream().flatMap(abs -> {
-					return airdateEpisodeList.stream().filter(sxe -> abs.getSpecial() == null && sxe.getSpecial() == null).filter(sxe -> {
-						return abs.getAbsolute() != null && abs.getAbsolute().equals(sxe.getAbsolute());
-					});
-				}).collect(toList());
-
-				// sanity check
-				if (airdateEpisode.size() != episode.size()) {
-					break;
-				}
-
-				return airdateEpisode.size() == 1 ? airdateEpisode.get(0) : new MultiEpisode(airdateEpisode);
-			}
-		}
-
-		// return episode object as is by default
-		return getEpisode();
+		return getEpisodes().stream().anyMatch(it -> isRegular(it));
 	}
 
 	@Define("episodelist")
-	public Object getEpisodeList() throws Exception {
-		return WebServices.getEpisodeListProvider(getSeriesInfo().getDatabase()).getEpisodeList(getSeriesInfo().getId(), SortOrder.forName(getSeriesInfo().getOrder()), new Locale(getSeriesInfo().getLanguage()));
+	public List<Episode> getEpisodeList() throws Exception {
+		return fetchEpisodeList(getEpisode());
 	}
 
-	@Define("localize")
-	public Object getLocalizedInfoObject() throws Exception {
-		return new DynamicBindings(key -> {
-			Language language = Language.findLanguage(key);
-			if (language != null) {
-				Object localizedInfo = null;
-				try {
-					if (infoObject instanceof Movie) {
-						localizedInfo = WebServices.TheMovieDB.getMovieInfo(getMovie(), language.getLocale(), true);
-					} else if (infoObject instanceof Episode) {
-						EpisodeListProvider db = WebServices.getEpisodeListProvider(getSeriesInfo().getDatabase());
-						List<Episode> episodes = db.getEpisodeList(getSeriesInfo().getId(), SortOrder.forName(getSeriesInfo().getOrder()), language.getLocale());
-						localizedInfo = episodes.stream().filter(it -> getEpisode().getNumbers().equals(it.getNumbers())).findFirst().orElse(null);
-					}
-				} catch (Exception e) {
-					throw new BindingException(key, e);
-				}
+	@Define("sy")
+	public List<Integer> getSeasonYears() throws Exception {
+		return getEpisodeList().stream().filter(e -> isRegular(e) && e.getSeason().equals(getSeasonNumber()) && e.getAirdate() != null).map(e -> e.getAirdate().getYear()).sorted().distinct().collect(toList());
+	}
 
-				if (localizedInfo != null) {
-					return createPropertyBindings(localizedInfo);
-				}
-			}
-			return undefined(key);
-		}, Language.availableLanguages().stream().map(Language::getName));
+	@Define("sc")
+	public Integer getSeasonCount() throws Exception {
+		return getEpisodeList().stream().filter(e -> isRegular(e) && e.getSeason() != null).map(Episode::getSeason).max(Integer::compare).get();
+	}
+
+	@Define("mediaTitle")
+	public String getMediaTitle() {
+		return getMediaInfo(StreamKind.General, 0, "Title", "Movie");
+	}
+
+	@Define("audioLanguages")
+	public List<Language> getAudioLanguageList() {
+		return getMediaInfo(StreamKind.Audio, "Language").filter(Objects::nonNull).distinct().map(Language::findLanguage).filter(Objects::nonNull).collect(toList());
+	}
+
+	@Define("textLanguages")
+	public List<Language> getTextLanguageList() {
+		return getMediaInfo(StreamKind.Text, "Language").filter(Objects::nonNull).distinct().map(Language::findLanguage).filter(Objects::nonNull).collect(toList());
 	}
 
 	@Define("bitrate")
-	public Long getBitRate() {
-		return new Double(getMediaInfo(StreamKind.General, 0, "OverallBitRate")).longValue();
+	public Long getOverallBitRate() {
+		return (long) Double.parseDouble(getMediaInfo(StreamKind.General, 0, "OverallBitRate"));
+	}
+
+	@Define("kbps")
+	public String getKiloBytesPerSecond() {
+		return String.format("%.0f kbps", getOverallBitRate() / 1e3f);
+	}
+
+	@Define("mbps")
+	public String getMegaBytesPerSecond() {
+		return String.format("%.1f Mbps", getOverallBitRate() / 1e6f);
+	}
+
+	@Define("khz")
+	public String getSamplingRate() {
+		return getMediaInfo(StreamKind.Audio, 0, "SamplingRate/String");
 	}
 
 	@Define("duration")
-	public Long getDuration() {
-		return (long) Double.parseDouble(getMediaInfo(StreamKind.General, 0, "Duration"));
+	public Duration getDuration() {
+		long d = (long) Double.parseDouble(getMediaInfo(StreamKind.General, 0, "Duration"));
+		return Duration.ofMillis(d);
 	}
 
 	@Define("seconds")
-	public Integer getSeconds() {
-		return (int) (getDuration() / 1000);
+	public long getSeconds() {
+		return getDuration().getSeconds();
 	}
 
 	@Define("minutes")
-	public Integer getDurationInMinutes() {
-		return (int) (getDuration() / 60000);
+	public long getMinutes() {
+		return getDuration().toMinutes();
+	}
+
+	@Define("hours")
+	public String getHours() {
+		return ExpressionFormatMethods.format(getDuration(), "H:mm");
 	}
 
 	@Define("media")
@@ -823,6 +876,21 @@ public class MediaBindingBean {
 		return createMediaInfoBindings(StreamKind.Chapters);
 	}
 
+	@Define("exif")
+	public AssociativeScriptObject getImageMetadata() throws Exception {
+		return new AssociativeScriptObject(new ImageMetadata(getMediaFile()).snapshot());
+	}
+
+	@Define("camera")
+	public AssociativeEnumObject getCamera() throws Exception {
+		return new ImageMetadata(getMediaFile()).getCameraModel().map(AssociativeEnumObject::new).orElse(null);
+	}
+
+	@Define("location")
+	public AssociativeEnumObject getLocation() throws Exception {
+		return new ImageMetadata(getMediaFile()).getLocationTaken().map(AssociativeEnumObject::new).orElse(null);
+	}
+
 	@Define("artist")
 	public String getArtist() {
 		return getMusic().getArtist();
@@ -845,7 +913,7 @@ public class MediaBindingBean {
 
 	@Define("episodes")
 	public List<Episode> getEpisodes() {
-		return infoObject instanceof MultiEpisode ? ((MultiEpisode) infoObject).getEpisodes() : singletonList(getEpisode());
+		return getMultiEpisodeList(getEpisode());
 	}
 
 	@Define("movie")
@@ -878,19 +946,28 @@ public class MediaBindingBean {
 		return null;
 	}
 
-	@Define("mediaType")
-	public List<String> getMediaType() throws Exception {
-		// format engine does not allow / in binding value
-		return SLASH.splitAsStream(MediaTypes.getDefault().getMediaType(getExtension())).collect(toList());
+	@Define("type")
+	public String getInfoObjectType() {
+		return infoObject.getClass().getSimpleName();
 	}
 
-	@Define("file")
+	@Define("mime")
+	public List<String> getMediaType() throws Exception {
+		// format engine does not allow / in binding value
+		return SLASH.splitAsStream(MediaTypes.getMediaType(getExtension())).collect(toList());
+	}
+
+	@Define("mediaPath")
+	public File getMediaPath() throws Exception {
+		return getStructurePathTail(getMediaFile());
+	}
+
+	@Define("f")
 	public File getMediaFile() {
 		// make sure file is not null, and that it is an existing file
 		if (mediaFile == null) {
 			throw new IllegalStateException(EXCEPTION_SAMPLE_FILE_NOT_SET);
 		}
-
 		return mediaFile;
 	}
 
@@ -900,28 +977,41 @@ public class MediaBindingBean {
 	}
 
 	@Define("bytes")
-	public Long getFileSize() {
+	public long getFileSize() {
+		// sum size of all files
+		if (getMediaFile().isDirectory()) {
+			return listFiles(getMediaFile(), FILES).stream().mapToLong(File::length).sum();
+		}
+
+		// size of inferred media file (e.g. video file size for subtitle file)
 		return getInferredMediaFile().length();
 	}
 
 	@Define("megabytes")
 	public String getFileSizeInMegaBytes() {
-		return String.format("%.0f", getFileSize() / Math.pow(1000, 2));
+		return String.format("%.0f", getFileSize() / 1e6);
 	}
 
 	@Define("gigabytes")
 	public String getFileSizeInGigaBytes() {
-		return String.format("%.1f", getFileSize() / Math.pow(1000, 3));
+		return String.format("%.1f", getFileSize() / 1e9);
+	}
+
+	@Define("encodedDate")
+	public SimpleDate getEncodedDate() {
+		String date = getMediaInfo(StreamKind.General, 0, "Encoded_Date"); // e.g. UTC 2008-01-08 19:54:39
+		ZonedDateTime time = ZonedDateTime.parse(date, DateTimeFormatter.ofPattern("zzz uuuu-MM-dd HH:mm:ss"));
+		return new SimpleDate(time);
+	}
+
+	@Define("today")
+	public SimpleDate getToday() {
+		return new SimpleDate(LocalDateTime.now());
 	}
 
 	@Define("home")
 	public File getUserHome() {
-		return ApplicationFolder.UserHome.getCanonicalFile();
-	}
-
-	@Define("now")
-	public Date getNow() {
-		return new Date();
+		return ApplicationFolder.UserHome.get();
 	}
 
 	@Define("output")
@@ -948,14 +1038,19 @@ public class MediaBindingBean {
 
 	@Define("di")
 	public Integer getDuplicateIndex() {
-		return 1 + identityIndexOf(context.values().stream().filter(it -> getInfoObject().equals(it)).collect(toList()), getInfoObject());
+		return 1 + identityIndexOf(context.values().stream().filter(getInfoObject()::equals).collect(toList()), getInfoObject());
+	}
+
+	@Define("dc")
+	public Integer getDuplicateCount() {
+		return context.values().stream().filter(getInfoObject()::equals).mapToInt(i -> 1).sum();
 	}
 
 	@Define("plex")
 	public File getPlexStandardPath() throws Exception {
 		String path = NamingStandard.Plex.getPath(infoObject);
 		try {
-			path = path.concat(getSubtitleTags());
+			path = path.concat(getSubtitleTags()); // NPE if {subt} is undefined
 		} catch (Exception e) {
 			// ignore => no language tags
 		}
@@ -964,31 +1059,33 @@ public class MediaBindingBean {
 
 	@Define("self")
 	public AssociativeScriptObject getSelf() {
-		return createBindingObject(mediaFile, infoObject, context);
+		return createBindingObject(mediaFile, infoObject, context, property -> null);
 	}
 
 	@Define("model")
 	public List<AssociativeScriptObject> getModel() {
 		List<AssociativeScriptObject> result = new ArrayList<AssociativeScriptObject>();
 		for (Entry<File, ?> it : context.entrySet()) {
-			result.add(createBindingObject(it.getKey(), it.getValue(), context));
+			result.add(createBindingObject(it.getKey(), it.getValue(), context, property -> null));
 		}
 		return result;
 	}
 
 	@Define("json")
 	public String getInfoObjectDump() {
-		return JsonWriter.objectToJson(infoObject);
+		return MetaAttributes.toJson(infoObject);
 	}
 
 	public File getInferredMediaFile() {
-		if (getMediaFile().isDirectory()) {
+		File file = getMediaFile();
+
+		if (file.isDirectory()) {
 			// just select the first video file in the folder as media sample
-			SortedSet<File> videos = new TreeSet<File>(filter(listFiles(getMediaFile()), VIDEO_FILES));
+			List<File> videos = listFiles(file, VIDEO_FILES, CASE_INSENSITIVE_PATH_ORDER);
 			if (videos.size() > 0) {
-				return videos.iterator().next();
+				return videos.get(0);
 			}
-		} else if (SUBTITLE_FILES.accept(getMediaFile()) || ((infoObject instanceof Episode || infoObject instanceof Movie) && !VIDEO_FILES.accept(getMediaFile()))) {
+		} else if ((SUBTITLE_FILES.accept(file) || IMAGE_FILES.accept(file)) || ((infoObject instanceof Episode || infoObject instanceof Movie) && !VIDEO_FILES.accept(file))) {
 			// prefer equal match from current context if possible
 			if (context != null) {
 				for (Entry<File, ?> it : context.entrySet()) {
@@ -999,8 +1096,8 @@ public class MediaBindingBean {
 			}
 
 			// file is a subtitle, or nfo, etc
-			String baseName = stripReleaseInfo(FileUtilities.getName(getMediaFile())).toLowerCase();
-			List<File> videos = getChildren(getMediaFile().getParentFile(), VIDEO_FILES);
+			String baseName = stripReleaseInfo(FileUtilities.getName(file)).toLowerCase();
+			List<File> videos = getChildren(file.getParentFile(), VIDEO_FILES);
 
 			// find corresponding movie file
 			for (File movieFile : videos) {
@@ -1011,15 +1108,69 @@ public class MediaBindingBean {
 
 			// still no good match found -> just take the most probable video from the same folder
 			if (videos.size() > 0) {
-				sort(videos, SimilarityComparator.compareTo(FileUtilities.getName(getMediaFile()), FileUtilities::getName));
+				sort(videos, SimilarityComparator.compareTo(FileUtilities.getName(file), FileUtilities::getName));
 				return videos.get(0);
 			}
 		}
 
-		return getMediaFile();
+		return file;
 	}
 
-	private static final Map<File, MediaInfo> sharedMediaInfoObjects = new WeakValueHashMap<File, MediaInfo>(64);
+	public Episode getSeasonEpisode() {
+		// magically convert AniDB absolute numbers to TheTVDB SxE numbers if AniDB is selected with airdate SxE episode sort order
+		if (getEpisodes().stream().allMatch(it -> isAnime(it) && isRegular(it) && !isAbsolute(it))) {
+			try {
+				return getEpisodeByAbsoluteNumber(getEpisode(), TheTVDB, SortOrder.Airdate);
+			} catch (Exception e) {
+				debug.warning(e::toString);
+			}
+		}
+		return getEpisode();
+	}
+
+	public SeriesInfo getPrimarySeriesInfo() {
+		if (TheTVDB.getIdentifier().equals(getSeriesInfo().getDatabase())) {
+			try {
+				return TheTVDB.getSeriesInfo(getSeriesInfo().getId(), Locale.ENGLISH);
+			} catch (Exception e) {
+				debug.warning("Failed to retrieve primary series info: " + e); // default to seriesInfo property
+			}
+		}
+
+		return getSeriesInfo();
+	}
+
+	private final Resource<MovieInfo> primaryMovieInfo = Resource.lazy(() -> TheMovieDB.getMovieInfo(getMovie(), Locale.US, false));
+	private final Resource<MovieInfo> extendedMovieInfo = Resource.lazy(() -> getMovieInfo(getMovie().getLanguage(), true));
+
+	public MovieInfo getPrimaryMovieInfo() {
+		try {
+			return primaryMovieInfo.get();
+		} catch (Exception e) {
+			throw new BindingException("info", "Failed to retrieve primary movie info: " + e, e);
+		}
+	}
+
+	public MovieInfo getMovieInfo() {
+		try {
+			return extendedMovieInfo.get();
+		} catch (Exception e) {
+			throw new BindingException("info", "Failed to retrieve extended movie info: " + e, e);
+		}
+	}
+
+	public synchronized MovieInfo getMovieInfo(Locale locale, boolean extendedInfo) throws Exception {
+		Movie m = getMovie();
+
+		if (m.getTmdbId() > 0)
+			return TheMovieDB.getMovieInfo(m, locale == null ? Locale.US : locale, extendedInfo);
+		if (m.getImdbId() > 0)
+			return OMDb.getMovieInfo(m);
+
+		return null;
+	}
+
+	private static final Map<File, MediaInfo> sharedMediaInfoObjects = synchronizedMap(new WeakValueHashMap<File, MediaInfo>(64));
 
 	private synchronized MediaInfo getMediaInfo() {
 		// lazy initialize
@@ -1027,15 +1178,13 @@ public class MediaBindingBean {
 			// use inferred media file (e.g. actual movie file instead of subtitle file)
 			File inferredMediaFile = getInferredMediaFile();
 
-			synchronized (sharedMediaInfoObjects) {
-				mediaInfo = sharedMediaInfoObjects.computeIfAbsent(inferredMediaFile, f -> {
-					try {
-						return new MediaInfo().open(f);
-					} catch (Exception e) {
-						throw new MediaInfoException(e.getMessage());
-					}
-				});
-			}
+			mediaInfo = sharedMediaInfoObjects.computeIfAbsent(inferredMediaFile, f -> {
+				try {
+					return new MediaInfo().open(f);
+				} catch (IOException e) {
+					throw new MediaInfoException(e.getMessage());
+				}
+			});
 		}
 
 		return mediaInfo;
@@ -1062,7 +1211,19 @@ public class MediaBindingBean {
 		return undefined(String.format("%s[%d][%s]", streamKind, streamNumber, join(keys, ", ")));
 	}
 
-	private AssociativeScriptObject createBindingObject(File file, Object info, Map<File, ?> context) {
+	private Stream<String> getMediaInfo(StreamKind streamKind, String... keys) {
+		return IntStream.range(0, getMediaInfo().streamCount(streamKind)).mapToObj(streamNumber -> {
+			return stream(keys).map(key -> {
+				return getMediaInfo().get(streamKind, streamNumber, key);
+			}).filter(s -> s.length() > 0).findFirst().orElse(null);
+		});
+	}
+
+	private AssociativeScriptObject createBindingObject(Object info) {
+		return createBindingObject(null, info, null, this::undefined);
+	}
+
+	private AssociativeScriptObject createBindingObject(File file, Object info, Map<File, ?> context, Function<String, Object> defaultValue) {
 		MediaBindingBean mediaBindingBean = new MediaBindingBean(info, file, context) {
 
 			@Override
@@ -1071,53 +1232,58 @@ public class MediaBindingBean {
 				return null; // never throw exceptions for empty or null values
 			}
 		};
-		return new AssociativeScriptObject(new ExpressionBindings(mediaBindingBean));
+
+		return new AssociativeScriptObject(new ExpressionBindings(mediaBindingBean), defaultValue);
 	}
 
 	private AssociativeScriptObject createPropertyBindings(Object object) {
-		return new AssociativeScriptObject(new PropertyBindings(object, null)) {
-
-			@Override
-			public Object getProperty(String name) {
-				Object value = super.getProperty(name);
-				if (value == null) {
-					return undefined(name);
-				}
-				if (value instanceof CharSequence) {
-					return replacePathSeparators(value.toString()).trim(); // auto-clean value of path separators
-				}
-				return value;
-			}
-		};
+		return new AssociativeScriptObject(new PropertyBindings(object), this::undefined);
 	}
 
 	private List<AssociativeScriptObject> createMediaInfoBindings(StreamKind kind) {
-		return getMediaInfo().snapshot().get(kind).stream().map(AssociativeScriptObject::new).collect(toList());
+		return getMediaInfo().snapshot().get(kind).stream().map(m -> new AssociativeScriptObject(m, this::undefined)).collect(toList());
 	}
 
-	private String getOriginalFileName(File file) {
-		String name = xattr.getOriginalName(file);
-		return name == null ? null : getNameWithoutExtension(name);
+	private String[] getFileNames(File file) {
+		List<String> names = new ArrayList<String>(3);
+		names.add(getNameWithoutExtension(file.getName())); // current file name
+
+		String original = xattr.getOriginalName(file);
+		if (original != null) {
+			names.add(getNameWithoutExtension(original)); // original file name
+		}
+
+		File parent = file.getParentFile();
+		if (parent != null && parent.getParent() != null) {
+			names.add(parent.getName()); // current folder name
+		}
+
+		return names.toArray(new String[0]);
 	}
 
-	private List<String> getKeywords() {
+	private Pattern getKeywordExcludePattern() {
 		// collect key information
 		List<Object> keys = new ArrayList<Object>();
-		keys.add(getName());
-		keys.add(getYear());
-		keys.addAll(getAliasNames());
 
-		if (infoObject instanceof Episode) {
-			for (Episode it : getEpisodes()) {
-				keys.addAll(it.getSeriesNames());
-				keys.add(it.getTitle());
+		if (infoObject instanceof Episode || infoObject instanceof Movie) {
+			keys.add(getName());
+			keys.addAll(getAliasNames());
+
+			if (infoObject instanceof Episode) {
+				for (Episode e : getEpisodes()) {
+					keys.add(e.getTitle());
+				}
+			} else if (infoObject instanceof Movie) {
+				keys.add(getYear());
 			}
 		}
 
 		// word list for exclude pattern
-		return keys.stream().filter(Objects::nonNull).map(it -> {
-			return normalizePunctuation(normalizeSpace(it.toString(), " "));
-		}).filter(s -> s.length() > 0).distinct().collect(toList());
+		String pattern = keys.stream().filter(Objects::nonNull).map(Objects::toString).map(s -> {
+			return normalizePunctuation(s, " ", "\\P{Alnum}+");
+		}).filter(s -> s.length() > 0).collect(joining("|", "\\b(", ")\\b"));
+
+		return Pattern.compile(pattern, Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CHARACTER_CLASS);
 	}
 
 	@Override

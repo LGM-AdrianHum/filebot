@@ -5,6 +5,7 @@ import static java.util.stream.Collectors.*;
 import static net.filebot.CachedResource.*;
 import static net.filebot.Logging.*;
 import static net.filebot.util.JsonUtilities.*;
+import static net.filebot.util.RegularExpressions.*;
 import static net.filebot.util.StringUtilities.*;
 import static net.filebot.web.WebRequest.*;
 
@@ -31,15 +32,19 @@ import javax.swing.Icon;
 import net.filebot.Cache;
 import net.filebot.CacheType;
 import net.filebot.ResourceManager;
-import net.filebot.web.TMDbClient.MovieInfo;
-import net.filebot.web.TMDbClient.MovieProperty;
 
 public class OMDbClient implements MovieIdentificationService {
 
-	private static final FloodLimit REQUEST_LIMIT = new FloodLimit(20, 10, TimeUnit.SECONDS);
+	private static final FloodLimit REQUEST_LIMIT = new FloodLimit(2, 1, TimeUnit.SECONDS);
+
+	private String apikey;
+
+	public OMDbClient(String apikey) {
+		this.apikey = apikey;
+	}
 
 	@Override
-	public String getName() {
+	public String getIdentifier() {
 		return "OMDb";
 	}
 
@@ -120,17 +125,18 @@ public class OMDbClient implements MovieIdentificationService {
 			if (name.length() <= 0 || year <= 1900 || imdbid <= 0)
 				throw new IllegalArgumentException();
 
-			return new Movie(name, year, imdbid, 0);
+			return new Movie(name, year, imdbid);
 		} catch (Exception e) {
 			throw new IllegalArgumentException("Illegal fields: " + info);
 		}
 	}
 
 	public Object request(Map<String, Object> parameters) throws Exception {
-		Cache cache = Cache.getCache(getName(), CacheType.Weekly);
-		String key = '?' + encodeParameters(parameters, true);
+		Cache cache = Cache.getCache(getName(), CacheType.Monthly);
 
-		return cache.json(key, s -> getResource(s)).fetch(withPermit(fetchIfModified(), r -> REQUEST_LIMIT.acquirePermit())).expire(Cache.ONE_WEEK).get();
+		return cache.json(encodeParameters(parameters, true), s -> {
+			return getResource('?' + s + "&apikey=" + apikey);
+		}).fetch(withPermit(fetchIfModified(), r -> REQUEST_LIMIT.acquirePermit())).expire(Cache.ONE_WEEK).get();
 	}
 
 	public URL getResource(String file) throws Exception {
@@ -162,15 +168,15 @@ public class OMDbClient implements MovieIdentificationService {
 			throw new IllegalArgumentException("Movie not found: " + data);
 		}
 
-		Map<MovieProperty, String> fields = new EnumMap<MovieProperty, String>(MovieProperty.class);
-		fields.put(MovieProperty.title, data.get("title"));
-		fields.put(MovieProperty.certification, data.get("rated"));
-		fields.put(MovieProperty.runtime, data.get("runtime"));
-		fields.put(MovieProperty.tagline, data.get("plot"));
-		fields.put(MovieProperty.vote_average, data.get("imdbRating"));
-		fields.put(MovieProperty.vote_count, data.get("imdbVotes").replaceAll("\\D", ""));
-		fields.put(MovieProperty.imdb_id, data.get("imdbID"));
-		fields.put(MovieProperty.poster_path, data.get("poster"));
+		Map<MovieInfo.Property, String> fields = new EnumMap<MovieInfo.Property, String>(MovieInfo.Property.class);
+		fields.put(MovieInfo.Property.title, data.get("title"));
+		fields.put(MovieInfo.Property.certification, data.get("rated"));
+		fields.put(MovieInfo.Property.runtime, getRuntimeMinutes(data.get("runtime")));
+		fields.put(MovieInfo.Property.tagline, data.get("plot"));
+		fields.put(MovieInfo.Property.vote_average, data.get("imdbRating"));
+		fields.put(MovieInfo.Property.vote_count, getVoteCount(data.get("imdbVotes")));
+		fields.put(MovieInfo.Property.imdb_id, data.get("imdbID"));
+		fields.put(MovieInfo.Property.poster_path, data.get("poster"));
 
 		// convert release date to yyyy-MM-dd
 		SimpleDate release = parsePartialDate(data.get("released"), "d MMM yyyy");
@@ -178,7 +184,7 @@ public class OMDbClient implements MovieIdentificationService {
 			release = parsePartialDate(data.get("released"), "yyyy");
 		}
 		if (release != null) {
-			fields.put(MovieProperty.release_date, release.toString());
+			fields.put(MovieInfo.Property.release_date, release.toString());
 		}
 
 		// convert lists
@@ -187,11 +193,27 @@ public class OMDbClient implements MovieIdentificationService {
 		List<String> languages = split(delim, data.get("language"), String::toString);
 
 		List<Person> actors = new ArrayList<Person>();
-		actors.addAll(split(delim, data.get("actors"), (s) -> new Person(s, Person.ACTOR)));
-		actors.addAll(split(delim, data.get("director"), (s) -> new Person(s, Person.DIRECTOR)));
-		actors.addAll(split(delim, data.get("writer"), (s) -> new Person(s, Person.WRITER)));
+		actors.addAll(split(delim, data.get("actors"), s -> new Person(s, Person.ACTOR)));
+		actors.addAll(split(delim, data.get("director"), s -> new Person(s, Person.DIRECTOR)));
+		actors.addAll(split(delim, data.get("writer"), s -> new Person(s, Person.WRITER)));
 
 		return new MovieInfo(fields, emptyList(), genres, emptyMap(), languages, emptyList(), emptyList(), actors, emptyList());
+	}
+
+	private String getVoteCount(String votes) {
+		return NON_DIGIT.matcher(votes).replaceAll("");
+	}
+
+	private String getRuntimeMinutes(String runtime) {
+		List<Integer> n = matchIntegers(runtime);
+		switch (n.size()) {
+		case 0:
+			return null;
+		case 1:
+			return Integer.toString(n.get(0));// e.g 162 min
+		default:
+			return Integer.toString(n.get(0) * 60 + n.get(1));// e.g 1h 30min
+		}
 	}
 
 	private SimpleDate parsePartialDate(String value, String format) {
@@ -216,7 +238,7 @@ public class OMDbClient implements MovieIdentificationService {
 		if (value == null || value.isEmpty())
 			return emptyList();
 
-		return regex.splitAsStream(value).map(String::trim).filter(s -> !s.equals("N/A")).map(toObject).collect(toList());
+		return regex.splitAsStream(value).map(String::trim).filter(s -> !s.isEmpty() && !s.equals("N/A")).map(toObject).collect(toList());
 	}
 
 }

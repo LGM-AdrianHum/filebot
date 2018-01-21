@@ -1,15 +1,21 @@
 package net.filebot.mediainfo;
 
+import static java.nio.charset.StandardCharsets.*;
+import static java.util.stream.Collectors.*;
+import static net.filebot.Logging.*;
+import static net.filebot.util.RegularExpressions.*;
+
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.nio.charset.StandardCharsets;
+import java.lang.ref.Cleaner;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import com.sun.jna.Platform;
 import com.sun.jna.Pointer;
@@ -18,10 +24,12 @@ import com.sun.jna.WString;
 public class MediaInfo implements Closeable {
 
 	private Pointer handle;
+	private Cleaner.Cleanable cleanable;
 
 	public MediaInfo() {
 		try {
 			handle = MediaInfoLibrary.INSTANCE.New();
+			cleanable = cleaner.register(this, new Finalizer(handle));
 		} catch (LinkageError e) {
 			throw new MediaInfoException(e);
 		}
@@ -35,20 +43,20 @@ public class MediaInfo implements Closeable {
 		String path = file.getCanonicalPath();
 
 		// on Mac files that contain accents cannot be opened via JNA WString file paths due to encoding differences so we use the buffer interface instead for these files
-		if (Platform.isMac() && !StandardCharsets.US_ASCII.newEncoder().canEncode(path)) {
+		if (Platform.isMac() && !US_ASCII.newEncoder().canEncode(path)) {
 			try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
 				if (openViaBuffer(raf)) {
-					throw new IOException("Failed to initialize media info buffer: " + path);
+					return this;
 				}
+				throw new IOException("Failed to initialize media info buffer: " + path);
 			}
 		}
 
-		if (0 == MediaInfoLibrary.INSTANCE.Open(handle, new WString(path))) {
-			// failed to open file
-			throw new IOException("Failed to open media file: " + path);
+		// open via file path
+		if (0 != MediaInfoLibrary.INSTANCE.Open(handle, new WString(path))) {
+			return this;
 		}
-
-		return this;
+		throw new IOException("Failed to open media file: " + path);
 	}
 
 	private boolean openViaBuffer(RandomAccessFile f) throws IOException {
@@ -148,27 +156,25 @@ public class MediaInfo implements Closeable {
 			}
 		}
 
+		// MediaInfo does not support EXIF image metadata natively so we use the metadata-extractor library and implicitly merge that information in
+		if (streamKind == StreamKind.Image && streamNumber == 0) {
+			String path = get(StreamKind.General, 0, "CompleteName");
+			try {
+				Map<String, String> values = new ImageMetadata(new File(path)).snapshot(t -> {
+					return Stream.of(t.getDirectoryName(), t.getTagName()).flatMap(NON_WORD::splitAsStream).distinct().collect(joining("_"));
+				});
+				streamInfo.putAll(values);
+			} catch (Throwable e) {
+				debug.warning(format("%s: %s", e, path));
+			}
+		}
+
 		return streamInfo;
 	}
 
 	@Override
 	public synchronized void close() {
-		MediaInfoLibrary.INSTANCE.Close(handle);
-	}
-
-	public synchronized void dispose() {
-		if (handle == null) {
-			return;
-		}
-
-		// delete handle
-		MediaInfoLibrary.INSTANCE.Delete(handle);
-		handle = null;
-	}
-
-	@Override
-	protected void finalize() {
-		dispose();
+		cleanable.clean();
 	}
 
 	public enum StreamKind {
@@ -247,12 +253,29 @@ public class MediaInfo implements Closeable {
 		}
 	}
 
-	/**
-	 * Helper for easy usage
-	 */
 	public static Map<StreamKind, List<Map<String, String>>> snapshot(File file) throws IOException {
-		try (MediaInfo mi = new MediaInfo()) {
-			return mi.open(file).snapshot();
+		try (MediaInfo mi = new MediaInfo().open(file)) {
+			return mi.snapshot();
+		}
+	}
+
+	/**
+	 * Use {@link Cleaner} instead of Object.finalize()
+	 */
+	private static final Cleaner cleaner = Cleaner.create();
+
+	private static class Finalizer implements Runnable {
+
+		private Pointer handle;
+
+		public Finalizer(Pointer handle) {
+			this.handle = handle;
+		}
+
+		@Override
+		public void run() {
+			MediaInfoLibrary.INSTANCE.Close(handle);
+			MediaInfoLibrary.INSTANCE.Delete(handle);
 		}
 	}
 

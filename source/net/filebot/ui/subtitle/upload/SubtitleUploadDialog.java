@@ -1,8 +1,10 @@
 package net.filebot.ui.subtitle.upload;
 
 import static java.util.Collections.*;
+import static java.util.stream.Collectors.*;
 import static net.filebot.Logging.*;
 import static net.filebot.media.MediaDetection.*;
+import static net.filebot.util.FileUtilities.*;
 import static net.filebot.util.ui.SwingUI.*;
 
 import java.awt.Color;
@@ -12,6 +14,7 @@ import java.awt.event.ActionEvent;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -32,7 +35,6 @@ import net.filebot.Language;
 import net.filebot.ResourceManager;
 import net.filebot.WebServices;
 import net.filebot.media.MediaDetection;
-import net.filebot.util.FileUtilities;
 import net.filebot.util.ui.EmptySelectionModel;
 import net.filebot.web.Movie;
 import net.filebot.web.OpenSubtitlesClient;
@@ -58,7 +60,7 @@ public class SubtitleUploadDialog extends JDialog {
 		subtitleMappingTable = createTable();
 
 		JComponent content = (JComponent) getContentPane();
-		content.setLayout(new MigLayout("fill, insets dialog, nogrid", "", "[fill][pref!]"));
+		content.setLayout(new MigLayout("fill, insets dialog, nogrid, novisualpadding", "", "[fill][pref!]"));
 
 		content.add(new JScrollPane(subtitleMappingTable), "grow, wrap");
 
@@ -127,7 +129,7 @@ public class SubtitleUploadDialog extends JDialog {
 	}
 
 	private List<SubtitleGroup> getUploadGroups(SubtitleMapping[] table) {
-		return StreamEx.ofValues(StreamEx.of(table).groupingBy(SubtitleMapping::getGroup)).flatMap(this::groupRunsByCD).toList();
+		return StreamEx.ofValues(StreamEx.of(table).groupingBy(SubtitleMapping::getGroup, LinkedHashMap::new, toList())).flatMap(this::groupRunsByCD).toList();
 	}
 
 	private Stream<SubtitleGroup> groupRunsByCD(Collection<SubtitleMapping> group) {
@@ -151,7 +153,7 @@ public class SubtitleUploadDialog extends JDialog {
 			if (mapping.getLanguage() == null) {
 				mapping.setState(Status.Identifying);
 				try {
-					Locale locale = database.detectLanguage(FileUtilities.readFile(mapping.getSubtitle()));
+					Locale locale = database.detectLanguage(readFile(mapping.getSubtitle()));
 					mapping.setLanguage(Language.getLanguage(locale));
 				} catch (Exception e) {
 					debug.log(Level.WARNING, "Failed to auto-detect language: " + e.getMessage());
@@ -178,7 +180,7 @@ public class SubtitleUploadDialog extends JDialog {
 						Collection<Movie> identity = MediaDetection.detectMovie(mapping.getVideo(), database, Locale.ENGLISH, true);
 						for (Movie it : identity) {
 							if (it.getImdbId() <= 0 && it.getTmdbId() > 0) {
-								it = WebServices.TheMovieDB.getMovieDescriptor(it, Locale.ENGLISH);
+								it = WebServices.TheMovieDB.getMovieDescriptor(it, Locale.US);
 							}
 							if (it != null && it.getImdbId() > 0) {
 								mapping.setIdentity(it);

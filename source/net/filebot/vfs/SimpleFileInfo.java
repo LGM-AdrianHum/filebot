@@ -3,12 +3,16 @@ package net.filebot.vfs;
 import static net.filebot.util.FileUtilities.*;
 
 import java.io.File;
-import java.util.Arrays;
+import java.util.Objects;
 
 public class SimpleFileInfo implements FileInfo, Comparable<FileInfo> {
 
-	private final String path;
-	private final long length;
+	private String path;
+	private long length;
+
+	public SimpleFileInfo() {
+		// used by deserializer
+	}
 
 	public SimpleFileInfo(String path, long length) {
 		this.path = path;
@@ -37,7 +41,7 @@ public class SimpleFileInfo implements FileInfo, Comparable<FileInfo> {
 
 	@Override
 	public int hashCode() {
-		return Arrays.hashCode(new Object[] { getPath(), getLength() });
+		return Objects.hash(getPath(), getLength());
 	}
 
 	@Override

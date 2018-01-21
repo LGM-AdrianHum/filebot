@@ -4,10 +4,12 @@ import static java.nio.charset.StandardCharsets.*;
 import static java.util.Arrays.*;
 import static java.util.Collections.*;
 import static java.util.stream.Collectors.*;
+import static net.filebot.Logging.*;
 import static net.filebot.MediaTypes.*;
-import static net.filebot.media.XattrMetaInfo.*;
+import static net.filebot.util.FileUtilities.*;
 
 import java.io.File;
+import java.io.FileFilter;
 import java.io.IOException;
 import java.net.URL;
 import java.nio.ByteBuffer;
@@ -20,17 +22,19 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.SortedSet;
+import java.util.TreeSet;
+import java.util.logging.Level;
 
 import org.codehaus.groovy.runtime.DefaultGroovyMethods;
-
-import com.cedarsoftware.util.io.JsonReader;
-import com.cedarsoftware.util.io.JsonWriter;
+import org.codehaus.groovy.runtime.typehandling.DefaultTypeTransformation;
 
 import groovy.lang.Closure;
 import groovy.lang.Range;
 import net.filebot.MediaTypes;
 import net.filebot.MetaAttributeView;
 import net.filebot.media.MediaDetection;
+import net.filebot.media.XattrMetaInfo;
 import net.filebot.similarity.NameSimilarityMetric;
 import net.filebot.similarity.Normalization;
 import net.filebot.similarity.SimilarityMetric;
@@ -40,12 +44,24 @@ import net.filebot.web.WebRequest;
 
 public class ScriptShellMethods {
 
-	public static File plus(File self, String name) {
-		return new File(self.getPath().concat(name));
+	public static File plus(File self, String path) {
+		return new File(self.getPath().concat(path));
 	}
 
-	public static File div(File self, String name) {
-		return new File(self, name);
+	public static File div(File self, String path) {
+		return new File(self, path);
+	}
+
+	public static File div(String self, String path) {
+		return new File(self, path);
+	}
+
+	public static File div(File self, File path) {
+		return new File(self, path.getPath());
+	}
+
+	public static String negative(String self) {
+		return '-' + self;
 	}
 
 	public static String getAt(File self, int index) {
@@ -69,7 +85,7 @@ public class ScriptShellMethods {
 	}
 
 	public static List<File> listFiles(File self, Closure<?> closure) {
-		return DefaultGroovyMethods.findAll(FileUtilities.getChildren(self), closure);
+		return FileUtilities.getChildren(self, (FileFilter) DefaultTypeTransformation.castToType(closure, FileFilter.class), null);
 	}
 
 	public static boolean isVideo(File self) {
@@ -92,14 +108,24 @@ public class ScriptShellMethods {
 		return ARCHIVE_FILES.accept(self);
 	}
 
-	public static boolean isDisk(File self) throws Exception {
+	public static boolean isImage(File self) {
+		return IMAGE_FILES.accept(self);
+	}
+
+	public static boolean isDisk(File self) {
 		// check disk folder
-		if (self.isDirectory() && MediaDetection.isDiskFolder(self))
+		if (self.isDirectory() && MediaDetection.isDiskFolder(self)) {
 			return true;
+		}
 
 		// check disk image
-		if (self.isFile() && MediaTypes.getDefaultFilter("video/iso").accept(self) && MediaDetection.isVideoDiskFile(self))
-			return true;
+		if (self.isFile() && MediaTypes.getTypeFilter("video/iso").accept(self)) {
+			try {
+				return MediaDetection.isVideoDiskFile(self);
+			} catch (Exception e) {
+				debug.log(Level.WARNING, "Failed to read disk image: " + e);
+			}
+		}
 
 		return false;
 	}
@@ -109,11 +135,11 @@ public class ScriptShellMethods {
 	}
 
 	public static boolean hasFile(File self, Closure<?> closure) {
-		return DefaultGroovyMethods.find(FileUtilities.getChildren(self), closure) != null;
+		return listFiles(self, closure).size() > 0;
 	}
 
 	public static List<File> listTree(File self, int maxDepth) {
-		return FileUtilities.listFiles(singleton(self), maxDepth, false, true, true);
+		return FileUtilities.listFiles(new File[] { self }, maxDepth, FILES, HUMAN_NAME_ORDER);
 	}
 
 	public static List<File> getFiles(File self) {
@@ -121,7 +147,7 @@ public class ScriptShellMethods {
 	}
 
 	public static List<File> getFiles(File self, Closure<?> closure) {
-		return getFiles(singletonList(self), closure);
+		return getFiles(singleton(self), closure);
 	}
 
 	public static List<File> getFiles(Collection<?> self) {
@@ -129,14 +155,14 @@ public class ScriptShellMethods {
 	}
 
 	public static List<File> getFiles(Collection<?> self, Closure<?> closure) {
-		final List<File> roots = FileUtilities.asFileList(self.toArray());
+		List<File> roots = FileUtilities.asFileList(self.toArray());
 
-		List<File> files = FileUtilities.listFiles(roots);
+		List<File> files = FileUtilities.listFiles(roots, FILES, HUMAN_NAME_ORDER);
 		if (closure != null) {
 			files = DefaultGroovyMethods.findAll(files, closure);
 		}
 
-		return FileUtilities.sortByUniquePath(files);
+		return files;
 	}
 
 	public static List<File> getFolders(File self) {
@@ -152,18 +178,18 @@ public class ScriptShellMethods {
 	}
 
 	public static List<File> getFolders(Collection<?> self, Closure<?> closure) {
-		final List<File> roots = FileUtilities.asFileList(self.toArray());
+		List<File> roots = FileUtilities.asFileList(self.toArray());
 
-		List<File> folders = FileUtilities.listFolders(roots);
+		List<File> folders = FileUtilities.listFiles(roots, FOLDERS, HUMAN_NAME_ORDER);
 		if (closure != null) {
 			folders = DefaultGroovyMethods.findAll(folders, closure);
 		}
 
-		return FileUtilities.sortByUniquePath(folders);
+		return folders;
 	}
 
 	public static List<File> getMediaFolders(File self) throws IOException {
-		final List<File> mediaFolders = new ArrayList<File>();
+		SortedSet<File> folders = new TreeSet<File>(CASE_INSENSITIVE_PATH_ORDER);
 
 		Files.walkFileTree(self.toPath(), new SimpleFileVisitor<Path>() {
 
@@ -175,8 +201,8 @@ public class ScriptShellMethods {
 					return FileVisitResult.SKIP_SUBTREE;
 				}
 
-				if (FileUtilities.filter(FileUtilities.getChildren(folder), VIDEO_FILES).size() > 0 || MediaDetection.isDiskFolder(folder)) {
-					mediaFolders.add(folder);
+				if (FileUtilities.getChildren(folder, VIDEO_FILES).size() > 0 || MediaDetection.isDiskFolder(folder)) {
+					folders.add(folder);
 					return FileVisitResult.SKIP_SUBTREE;
 				}
 
@@ -184,19 +210,13 @@ public class ScriptShellMethods {
 			}
 		});
 
-		return FileUtilities.sortByUniquePath(mediaFolders);
+		return new ArrayList<File>(folders);
 	}
 
-	public static Iterable<File> eachMediaFolder(Collection<?> folders, Closure<?> closure) throws IOException {
-		List<File> mediaFolders = new ArrayList<File>();
-		for (File root : FileUtilities.asFileList(folders)) {
-			mediaFolders.addAll(getMediaFolders(root));
+	public static void eachMediaFolder(Collection<?> self, Closure<?> closure) throws IOException {
+		for (File it : FileUtilities.asFileList(self)) {
+			DefaultGroovyMethods.each(getMediaFolders(it), closure);
 		}
-
-		// remove duplicates
-		mediaFolders = FileUtilities.sortByUniquePath(mediaFolders);
-
-		return DefaultGroovyMethods.each(mediaFolders, closure);
 	}
 
 	public static String getNameWithoutExtension(File self) {
@@ -255,10 +275,10 @@ public class ScriptShellMethods {
 		return FileUtilities.copyAs(self, new File(destination, self.getName()));
 	}
 
-	public static void createFileIfNotExists(File self) throws IOException {
+	public static void createIfNotExists(File self) throws IOException {
 		if (!self.isFile()) {
 			// create parent folder structure if necessary & create file
-			Files.createDirectories(self.getParentFile().toPath());
+			Files.createDirectories(self.toPath().getParent());
 			Files.createFile(self.toPath());
 		}
 	}
@@ -277,6 +297,10 @@ public class ScriptShellMethods {
 
 	public static String normalizePunctuation(String self) {
 		return Normalization.normalizePunctuation(self);
+	}
+
+	public static String stripReleaseInfo(String self) {
+		return MediaDetection.stripReleaseInfo(self, false);
 	}
 
 	// Web and File IO helpers
@@ -346,14 +370,6 @@ public class ScriptShellMethods {
 		return file;
 	}
 
-	public static String objectToJson(Object self) throws IOException {
-		return JsonWriter.objectToJson(self);
-	}
-
-	public static Object jsonToObject(String self) throws IOException {
-		return JsonReader.jsonToJava(self);
-	}
-
 	public static File getStructurePathTail(File self) throws Exception {
 		return MediaDetection.getStructurePathTail(self);
 	}
@@ -402,16 +418,18 @@ public class ScriptShellMethods {
 		try {
 			return new MetaAttributeView(self);
 		} catch (Exception e) {
-			return null;
+			debug.log(Level.WARNING, e::toString);
 		}
+		return null;
 	}
 
 	public static Object getMetadata(File self) {
 		try {
-			return xattr.getMetaInfo(self);
+			return new XattrMetaInfo(true, false).getMetaInfo(self);
 		} catch (Exception e) {
-			return null;
+			debug.log(Level.WARNING, e::toString);
 		}
+		return null;
 	}
 
 	public static boolean isEpisode(File self) {
@@ -420,6 +438,10 @@ public class ScriptShellMethods {
 
 	public static boolean isMovie(File self) {
 		return MediaDetection.isMovie(self, true);
+	}
+
+	private ScriptShellMethods() {
+		throw new UnsupportedOperationException();
 	}
 
 }

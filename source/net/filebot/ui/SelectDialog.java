@@ -69,12 +69,12 @@ public class SelectDialog<T> extends JDialog {
 		list.addMouseListener(mouseListener);
 
 		JComponent c = (JComponent) getContentPane();
-		c.setLayout(new MigLayout("insets 1.5mm 1.5mm 2.7mm 1.5mm, nogrid, fill", "", header == null ? "[pref!][fill][pref!]" : "[pref!][pref!][fill][pref!]"));
+		c.setLayout(new MigLayout("insets 1.5mm 1.5mm 2.7mm 1.5mm, nogrid, novisualpadding, fill", "", header == null ? "[pref!][fill][pref!]" : "[min!][min!][fill][pref!]"));
 
 		if (header != null) {
-			c.add(header, "wmin 150px, growx, wrap");
+			c.add(header, "wmin 150px, hmin pref, growx, wrap");
 		}
-		c.add(messageLabel, "wmin 150px, growx, wrap");
+		c.add(messageLabel, "wmin 150px, hmin pref, growx, wrap");
 		c.add(new JScrollPane(list), "wmin 150px, hmin 150px, grow, wrap 2mm");
 
 		c.add(new JButton(selectAction), "align center, id select");
@@ -82,10 +82,11 @@ public class SelectDialog<T> extends JDialog {
 
 		// add repeat button
 		if (autoRepeatEnabled) {
-			autoRepeatCheckBox.setSelected(autoRepeatSelected);
+			autoRepeatCheckBox.addChangeListener(evt -> autoRepeatCheckBox.setToolTipText(autoRepeatCheckBox.isSelected() ? "Select and remember for next time" : "Select once and ask again next time"));
 			autoRepeatCheckBox.setCursor(getPredefinedCursor(HAND_CURSOR));
 			autoRepeatCheckBox.setIcon(ResourceManager.getIcon("button.repeat"));
 			autoRepeatCheckBox.setSelectedIcon(ResourceManager.getIcon("button.repeat.selected"));
+			autoRepeatCheckBox.setSelected(autoRepeatSelected);
 			c.add(autoRepeatCheckBox, "pos 1al select.y n select.y2");
 		}
 
@@ -100,7 +101,7 @@ public class SelectDialog<T> extends JDialog {
 		return value.toString();
 	}
 
-	protected void configureValue(JComponent render, Object value) {
+	protected void configureValue(DefaultFancyListCellRenderer render, Object value) {
 		if (value instanceof SearchResult) {
 			render.setToolTipText(getTooltipText((SearchResult) value));
 		} else if (value instanceof File) {

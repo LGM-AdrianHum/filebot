@@ -2,13 +2,16 @@ package net.filebot;
 
 import static java.util.Arrays.*;
 import static java.util.Collections.*;
+import static java.util.Comparator.*;
 import static java.util.stream.Collectors.*;
+import static net.filebot.Logging.*;
 import static net.filebot.util.RegularExpressions.*;
 
 import java.io.Serializable;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.MissingResourceException;
 import java.util.ResourceBundle;
 import java.util.stream.Stream;
 
@@ -23,13 +26,17 @@ public class Language implements Serializable {
 	// ISO 639-2/B code
 	private final String iso_639_2B;
 
+	// BCP 47 language tag
+	private final String tag;
+
 	// Language name
 	private final String[] names;
 
-	public Language(String iso_639_1, String iso_639_3, String iso_639_2B, String[] names) {
+	public Language(String iso_639_1, String iso_639_3, String iso_639_2B, String tag, String[] names) {
 		this.iso_639_1 = iso_639_1;
 		this.iso_639_3 = iso_639_3;
 		this.iso_639_2B = iso_639_2B;
+		this.tag = tag;
 		this.names = names.clone();
 	}
 
@@ -38,7 +45,7 @@ public class Language implements Serializable {
 	}
 
 	public String getISO2() {
-		return iso_639_1; // 2-letter code
+		return iso_639_1;
 	}
 
 	public String getISO3() {
@@ -47,6 +54,10 @@ public class Language implements Serializable {
 
 	public String getISO3B() {
 		return iso_639_2B; // alternative 3-letter code
+	}
+
+	public String getTag() {
+		return tag;
 	}
 
 	public String getName() {
@@ -63,33 +74,26 @@ public class Language implements Serializable {
 	}
 
 	public Locale getLocale() {
-		return new Locale(getCode());
+		Locale locale = Locale.forLanguageTag(tag);
+
+		// e.g. x-jat
+		if (locale == null || locale.getLanguage().isEmpty()) {
+			return new Locale(iso_639_1);
+		}
+
+		return locale;
 	}
 
 	public boolean matches(String code) {
-		if (iso_639_1.equalsIgnoreCase(code) || iso_639_3.equalsIgnoreCase(code) || iso_639_2B.equalsIgnoreCase(code)) {
-			return true;
-		}
-		for (String it : names) {
-			if (it.equalsIgnoreCase(code) || code.toLowerCase().contains(it.toLowerCase())) {
-				return true;
-			}
-		}
-		return false;
+		return Stream.concat(Stream.of(iso_639_1, iso_639_2B, iso_639_3, tag), Stream.of(names)).anyMatch(c -> c.equalsIgnoreCase(code));
 	}
 
 	@Override
 	public Language clone() {
-		return new Language(iso_639_1, iso_639_3, iso_639_2B, names);
+		return new Language(iso_639_1, iso_639_3, iso_639_2B, tag, names);
 	}
 
-	public static final Comparator<Language> ALPHABETIC_ORDER = new Comparator<Language>() {
-
-		@Override
-		public int compare(Language o1, Language o2) {
-			return o1.getName().compareToIgnoreCase(o2.getName());
-		}
-	};
+	public static final Comparator<Language> ALPHABETIC_ORDER = comparing(Language::getName, String::compareToIgnoreCase);
 
 	public static Language getLanguage(String code) {
 		if (code == null || code.isEmpty()) {
@@ -97,11 +101,13 @@ public class Language implements Serializable {
 		}
 
 		try {
-			String[] values = TAB.split(getProperty(code), 3);
-			return new Language(code, values[0], values[1], TAB.split(values[2]));
+			String[] values = TAB.split(getProperty(code), 4);
+			return new Language(code, values[0], values[1], values[2], TAB.split(values[3]));
 		} catch (Exception e) {
-			return null;
+			debug.finest(cause(e)); // log and ignore
 		}
+
+		return null;
 	}
 
 	public static List<Language> getLanguages(String... codes) {
@@ -126,26 +132,30 @@ public class Language implements Serializable {
 
 	public static List<Language> availableLanguages() {
 		String languages = getProperty("languages.ui");
-		return getLanguages(COMMA.split(languages));
+		return getLanguages(SPACE.split(languages));
 	}
 
 	public static List<Language> commonLanguages() {
 		String languages = getProperty("languages.common");
-		return getLanguages(COMMA.split(languages));
+		return getLanguages(SPACE.split(languages));
 	}
 
 	public static List<Language> preferredLanguages() {
-		// English | System language | common languages
-		Stream<String> codes = Stream.of("en", Locale.getDefault().getLanguage());
+		// English | system language | common languages
+		Stream<String> codes = Stream.of(Locale.ENGLISH, Locale.getDefault()).map(Locale::getLanguage);
 
 		// append common languages
-		codes = Stream.concat(codes, stream(COMMA.split(getProperty("languages.common")))).distinct();
+		codes = Stream.concat(codes, SPACE.splitAsStream(getProperty("languages.common"))).distinct();
 
 		return codes.map(Language::getLanguage).collect(toList());
 	}
 
 	private static String getProperty(String key) {
-		return ResourceBundle.getBundle(Language.class.getName()).getString(key);
+		try {
+			return ResourceBundle.getBundle(Language.class.getName()).getString(key);
+		} catch (MissingResourceException e) {
+			throw new IllegalArgumentException("Illegal language code: " + key);
+		}
 	}
 
 }

@@ -2,73 +2,33 @@
 <html xmlns="http://www.w3.org/1999/xhtml" itemscope itemtype="http://schema.org/Product">
 	<head>
 		<meta http-equiv="content-type" content="text/html; charset=UTF-8" />
-		<meta name="keywords" content="rename tv shows, rename movies, download subtitles, check sfv files" />
+		<meta name="keywords" content="@{package.tags}" />
 
 		<title>FileBot Command-line Interface</title>
 		<meta name="description" content="The FileBot command-line interface will allow you to rename tv shows, download subtitles and do lots of other nifty things directly directly from the console. Running on an headless server is fully supported. Make sure to check out FileBot scripting as well for a new level of automation." />
 
 		<meta itemprop="name" content="FileBot Command-line Interface" />
 		<meta itemprop="description" content="The FileBot command-line interface will allow you to rename tv shows, download subtitles and do lots of other nifty things directly directly from the console. Running on an headless server is fully supported. Make sure to check out FileBot scripting as well for a new level of automation." />
-		<meta itemprop="image" content="http://www.filebot.net/icon.png" />
+		<meta itemprop="image" content="@{link.image.logo}" />
 
 		<link rel="stylesheet" href="base.css" type="text/css" />
 		<link rel="stylesheet" href="code.css" type="text/css" />
 		<link rel="icon" href="favicon.png" />
-
-		<!-- google +1 -->
-		<script type="text/javascript">
-		  window.___gcfg = {lang: 'en-GB'};
-
-		  (function() {
-		    var po = document.createElement('script'); po.type = 'text/javascript'; po.async = true;
-		    po.src = 'https://apis.google.com/js/plusone.js';
-		    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(po, s);
-		  })();
-		</script>
-
-		<!-- twitter -->
-		<script type="text/javascript">
-			!function(d,s,id){var js,fjs=d.getElementsByTagName(s)[0];if(!d.getElementById(id)){js=d.createElement(s);js.id=id;js.src="//platform.twitter.com/widgets.js";fjs.parentNode.insertBefore(js,fjs);}}(document,"script","twitter-wjs");
-		</script>
 	</head>
 	<body>
-		<!-- Facebook Like Button-->
-		<div id="fb-root"></div>
-		<script>(function(d, s, id) {
-		  var js, fjs = d.getElementsByTagName(s)[0];
-		  if (d.getElementById(id)) return;
-		  js = d.createElement(s); js.id = id;
-		  js.src = "//connect.facebook.net/en_GB/all.js#xfbml=1";
-		  fjs.parentNode.insertBefore(js, fjs);
-		}(document, 'script', 'facebook-jssdk'));</script>
-
 		<div class="page">
 			<div class="navigation">
 				<div>
 				<ul>
-					<li><a href="http://www.filebot.net/forums/">Forums</a></li>
-					<li><a href="http://www.filebot.net/forums/viewtopic.php?f=3&amp;t=7">FAQ</a></li>
-					<li><a href="http://www.filebot.net/#download">Download</a></li>
+					<li><a href="https://www.filebot.net/forums/">Forums</a></li>
+					<li><a href="https://www.filebot.net/forums/viewtopic.php?f=3&amp;t=7">FAQ</a></li>
+					<li><a href="https://www.filebot.net/#download">Download</a></li>
 				</ul>
 				</div>
 			</div>
 
-			<div class="social">
-				<div class="twitter">
-					<a href="https://twitter.com/share" class="twitter-share-button" data-url="http://www.filebot.net/" data-text="FileBot - The ultimate tv renamer and subtitle downloader" data-via="filebot_renamer" data-lang="en"></a>
-				</div>
-
-				<div class="facebook">
-					<div class="fb-like" data-href="https://www.facebook.com/filebot" data-send="false" data-layout="button_count" data-width="80" data-show-faces="false"></div>
-				</div>
-
-				<div class="plusone">
-					<g:plusone href="http://www.filebot.net/"></g:plusone>
-				</div>
-			</div>
-
 			<div class="header">
-				<a href="http://www.filebot.net"><img class="logo" alt="logo" src="images/filebot.logo.svg" width="64" height="64" /></a>
+				<a href="https://www.filebot.net/"><img class="logo" alt="logo" src="images/filebot.logo.svg" width="64" height="64" /></a>
 				<h1>
 					FileBot CLI
 					<span class="description">Command-line interface usage manual</span>
@@ -86,7 +46,7 @@
 					or in scripts for automation running tasks like renaming TV shows and movies, fetching subtitles or checking SFV files.
 					</p>
 					<p style="width: 420px">
-					The CLI is designed for simple tasks. Please have a look at <a href="script.html">Scripts and Automation</a> for something more powerful and find scripts for many common tasks <a href="http://www.filebot.net/forums/viewtopic.php?f=4&t=5#p5">here</a>.
+					The CLI is designed for simple tasks. Please have a look at <a href="script.html">Scripts and Automation</a> for something more powerful and find scripts for many common tasks <a href="https://www.filebot.net/forums/viewtopic.php?f=4&t=5#p5">here</a>.
 					</p>
 					<h2 id="examples">Examples</h2>
 					<h3 id="rename">Rename</h3>
@@ -152,6 +112,11 @@
 					<code><span class="cmd">filebot</span> <span class="option">-script</span> <span class="argument">"path/to/script.groovy"</span> <span class="argument">args...</span></code>
 					Execute a given Groovy script. Find the manual on scripting <a href="script.html">here</a>.
 					</p>
+					<h3 id="advanced">Advanced Usage</h3>
+					<p>
+					Check out the <a href="https://www.filebot.net/forums/viewtopic.php?f=4&t=4788">FileBot Command-Line Examples</a>
+					on how to use <span class="cmd">find</span> and <span class="cmd">xargs</span> in combination with <span class="cmd">filebot</span> and advanced options such as <span class="option">--db xattr</span> and <span class="option">--filter</span> for querying and processing media files and photos.
+					</p>
 
 
 					<h2 class="reference" id="arguments">
@@ -199,16 +164,16 @@
 						<tr>
 							<td>--action</td>
 							<td>rename action</td>
-							<td>move | copy | keeplink | symlink | hardlink</td>
+							<td>move | copy | keeplink | symlink | hardlink | test</td>
 						</tr>
 						<tr>
 							<td>--conflict</td>
 							<td>conflict resolution</td>
-							<td>override | skip | index | fail</td>
+							<td>override | skip | auto | index | fail</td>
 						</tr>
 						<tr>
 							<td>--filter</td>
-							<td><a href="http://www.filebot.net/forums/viewtopic.php?f=3&amp;t=2127" target="_blank">match filter rules</a></td>
+							<td><a href="https://www.filebot.net/forums/viewtopic.php?f=3&amp;t=2127" target="_blank">match filter rules</a></td>
 							<td>filter expression (e.g. <span style="font-family: monospace; color: #008800">y &gt; 2000</span>)</td>
 						</tr>
 						<tr>
@@ -235,7 +200,7 @@
 									<td>Rename mode: required for tricky filenames</td>
 								</tr>
 								<tr>
-									<td>Subtitle mode: <a href="http://www.filebot.net/forums/viewtopic.php?f=3&amp;t=2615" target="_blank">enable fuzzy search</a></td>
+									<td>Subtitle mode: <a href="https://www.filebot.net/forums/viewtopic.php?f=3&amp;t=2615" target="_blank">enable fuzzy search</a></td>
 								</tr>
 							</table>
 							</td>
@@ -293,9 +258,14 @@
 							<td></td>
 						</tr>
 						<tr>
+							<td>--mode</td>
+							<td><a href="https://www.filebot.net/forums/viewtopic.php?f=3&t=4398">interactive</a></td>
+							<td><a href="https://www.filebot.net/forums/viewtopic.php?f=3&t=4398">enable console-interactive mode</a></td>
+						</tr>
+						<tr>
 							<td>--log</td>
 							<td>log level</td>
-							<td>all, fine, info, warning, off</td>
+							<td>ALL | FINE | INFO | WARNING</td>
 						</tr>
 						<tr>
 							<td>-clear-cache</td>
@@ -326,16 +296,14 @@
 				</div>
 
 				<p class="suggestion">
-				Need some help getting started? Check the <a href="http://www.filebot.net/forums/viewforum.php?f=4">forums</a>.
+				Need some help getting started? Check the <a href="https://www.filebot.net/forums/viewforum.php?f=4">forums</a>.
 				</p>
 
 				<div class="metrics">
 				</div>
 
 				<div class="footer">
-					<p>
-					Hosted on <a href="http://sourceforge.net/projects/filebot/">sourceforge.net</a> | Creative Commons License: Attribution-NonCommercial-ShareAlike © @{tstamp.year}
-					</p>
+					<p>Hosted on <a href="https://www.filebot.net/">filebot.net</a> | Creative Commons License: Attribution-NonCommercial-ShareAlike © @{tstamp.year}</p>
 				</div>
 			</div>
 		</div>

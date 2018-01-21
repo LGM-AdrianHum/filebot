@@ -1,11 +1,12 @@
 package net.filebot.ui.rename;
 
 import static java.awt.datatransfer.DataFlavor.*;
-import static java.util.Arrays.*;
+import static java.util.stream.Collectors.*;
 import static net.filebot.MediaTypes.*;
 import static net.filebot.hash.VerificationUtilities.*;
 import static net.filebot.ui.transfer.FileTransferable.*;
 import static net.filebot.util.FileUtilities.*;
+import static net.filebot.util.RegularExpressions.*;
 
 import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.Transferable;
@@ -15,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Scanner;
+import java.util.stream.Stream;
 
 import net.filebot.hash.HashType;
 import net.filebot.hash.VerificationFileReader;
@@ -22,6 +24,7 @@ import net.filebot.torrent.Torrent;
 import net.filebot.ui.transfer.ArrayTransferable;
 import net.filebot.ui.transfer.FileTransferablePolicy;
 import net.filebot.util.FastFile;
+import net.filebot.util.FileUtilities.ExtensionFileFilter;
 import net.filebot.vfs.SimpleFileInfo;
 import net.filebot.web.Episode;
 
@@ -64,21 +67,12 @@ class NamesListTransferablePolicy extends FileTransferablePolicy {
 			load(getFilesFromTransferable(tr), action);
 		} else if (tr.isDataFlavorSupported(stringFlavor)) {
 			// string transferable
-			load((String) tr.getTransferData(stringFlavor));
+			load(tr.getTransferData(stringFlavor).toString());
 		}
 	}
 
 	protected void load(String string) {
-		List<String> values = new ArrayList<String>();
-		Scanner scanner = new Scanner(string);
-
-		while (scanner.hasNextLine()) {
-			String line = scanner.nextLine().trim();
-			if (line.length() > 0) {
-				values.add(normalizePathSeparators(line));
-			}
-		}
-
+		List<String> values = NEWLINE.splitAsStream(string).map(String::trim).filter(s -> s.length() > 0).map(s -> normalizePathSeparators(s)).collect(toList());
 		model.addAll(values);
 	}
 
@@ -97,7 +91,7 @@ class NamesListTransferablePolicy extends FileTransferablePolicy {
 			loadTorrentFiles(files, values);
 		} else {
 			// load all files from the given folders recursively up do a depth of 32
-			listFiles(files).stream().map(FastFile::new).forEach(values::add);
+			listFiles(files, FILES, HUMAN_NAME_ORDER).stream().map(FastFile::new).forEach(values::add);
 		}
 
 		model.addAll(values);
@@ -155,7 +149,7 @@ class NamesListTransferablePolicy extends FileTransferablePolicy {
 
 	@Override
 	public List<String> getFileFilterExtensions() {
-		return asList(combineFilter(VIDEO_FILES, SUBTITLE_FILES, AUDIO_FILES, LIST_FILES, TORRENT_FILES, VERIFICATION_FILES).extensions());
+		return Stream.of(VIDEO_FILES, SUBTITLE_FILES, AUDIO_FILES, LIST_FILES, TORRENT_FILES, VERIFICATION_FILES).map(ExtensionFileFilter::extensions).flatMap(Stream::of).collect(toList());
 	}
 
 }

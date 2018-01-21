@@ -1,5 +1,6 @@
 package net.filebot.format;
 
+import java.awt.AWTPermission;
 import java.io.File;
 import java.io.FilePermission;
 import java.lang.management.ManagementPermission;
@@ -14,6 +15,7 @@ import java.security.PrivilegedActionException;
 import java.security.PrivilegedExceptionAction;
 import java.security.ProtectionDomain;
 import java.util.PropertyPermission;
+import java.util.concurrent.Callable;
 import java.util.logging.LoggingPermission;
 
 import javax.script.CompiledScript;
@@ -21,7 +23,7 @@ import javax.script.ScriptContext;
 import javax.script.ScriptEngine;
 import javax.script.ScriptException;
 
-import net.filebot.Settings.ApplicationFolder;
+import net.filebot.ApplicationFolder;
 import net.filebot.util.ExceptionUtilities;
 
 public class SecureCompiledScript extends CompiledScript {
@@ -37,10 +39,15 @@ public class SecureCompiledScript extends CompiledScript {
 		permissions.add(new RuntimePermission("loadLibrary.*"));
 		permissions.add(new RuntimePermission("accessClassInPackage.*"));
 		permissions.add(new RuntimePermission("accessDeclaredMembers"));
+		permissions.add(new RuntimePermission("canProcessApplicationEvents"));
 		permissions.add(new RuntimePermission("getenv.*"));
 		permissions.add(new RuntimePermission("getFileSystemAttributes"));
+		permissions.add(new RuntimePermission("accessUserDefinedAttributes"));
 		permissions.add(new RuntimePermission("readFileDescriptor"));
 		permissions.add(new RuntimePermission("preferences"));
+		permissions.add(new AWTPermission("toolkitModality"));
+		permissions.add(new AWTPermission("setWindowAlwaysOnTop"));
+		permissions.add(new AWTPermission("showWindowWithoutWarningBanner"));
 		permissions.add(new FilePermission("<<ALL FILES>>", "read"));
 		permissions.add(new SocketPermission("*", "connect"));
 		permissions.add(new PropertyPermission("*", "read"));
@@ -52,7 +59,7 @@ public class SecureCompiledScript extends CompiledScript {
 
 		// write permissions for cache and temp folders
 		for (ApplicationFolder it : ApplicationFolder.values()) {
-			permissions.add(new FilePermission(it.getCanonicalFile() + File.separator + "-", "read, write, delete"));
+			permissions.add(new FilePermission(it.get().getAbsolutePath() + File.separator + "-", "read, write, delete"));
 		}
 
 		return permissions;
@@ -71,13 +78,23 @@ public class SecureCompiledScript extends CompiledScript {
 	}
 
 	@Override
-	public Object eval(final ScriptContext context) throws ScriptException {
+	public Object eval(ScriptContext context) throws ScriptException {
 		try {
 			return AccessController.doPrivileged(new PrivilegedExceptionAction<Object>() {
 
 				@Override
 				public Object run() throws ScriptException {
-					return compiledScript.eval(context);
+					Object value = compiledScript.eval(context);
+
+					if (value instanceof Callable<?>) {
+						try {
+							return ((Callable<?>) value).call();
+						} catch (Exception e) {
+							throw new ScriptException(e);
+						}
+					}
+
+					return value;
 				}
 			}, sandbox);
 		} catch (PrivilegedActionException e) {

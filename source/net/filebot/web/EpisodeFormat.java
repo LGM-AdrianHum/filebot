@@ -149,11 +149,11 @@ public class EpisodeFormat extends Format {
 		}
 
 		if ((m = sxePattern.matcher(source)).find()) {
-			season = (m.group(1) == null) ? null : new Integer(m.group(1));
+			season = (m.group(1) == null) ? null : Integer.parseInt(m.group(1));
 			if (m.group(2) == null)
-				episode = new Integer(m.group(3));
+				episode = Integer.parseInt(m.group(3));
 			else
-				special = new Integer(m.group(3));
+				special = Integer.parseInt(m.group(3));
 
 			source.replace(m.start(), m.end(), ""); // remove matched part from text
 
@@ -163,7 +163,7 @@ public class EpisodeFormat extends Format {
 
 			// did parse input
 			pos.setIndex(source.length());
-			return new Episode(name, season, episode, title, season == null ? episode : null, special, airdate, null);
+			return new Episode(name, season, episode, title, season == null ? episode : null, special, airdate, null, null);
 		}
 
 		// failed to parse input

@@ -6,11 +6,9 @@ import java.util.List;
 
 import org.junit.Test;
 
-import net.filebot.web.TMDbClient.MovieInfo;
-
 public class OMDbClientTest {
 
-	private final OMDbClient client = new OMDbClient();
+	private final OMDbClient client = new OMDbClient("49d311ec");
 
 	@Test
 	public void searchMovie1() throws Exception {

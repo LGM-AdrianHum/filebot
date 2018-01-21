@@ -33,7 +33,6 @@ import redstone.xmlrpc.XmlRpcException;
 import redstone.xmlrpc.XmlRpcFault;
 import redstone.xmlrpc.util.Base64;
 
-@SuppressWarnings("unchecked")
 public class OpenSubtitlesXmlRpc {
 
 	private final String useragent;
@@ -157,7 +156,7 @@ public class OpenSubtitlesXmlRpc {
 			String name = data.get("title");
 			int year = Integer.parseInt(data.get("year"));
 
-			return new Movie(name, year, imdbid, -1);
+			return new Movie(name, year, imdbid);
 		} catch (RuntimeException e) {
 			// ignore, invalid response
 			debug.log(Level.WARNING, String.format("Failed to lookup movie by imdbid %s: %s", imdbid, e.getMessage()));
@@ -289,7 +288,7 @@ public class OpenSubtitlesXmlRpc {
 								int year = Integer.parseInt(info.get("MovieYear"));
 								int imdb = Integer.parseInt(info.get("MovieImdbID"));
 
-								matches.add(new Movie(name, year, imdb, -1));
+								matches.add(new Movie(name, year, imdb));
 							}
 						}
 					}
@@ -318,7 +317,7 @@ public class OpenSubtitlesXmlRpc {
 		Map<String, String> subLanguageMap = new HashMap<String, String>();
 
 		for (Map<String, String> language : response.get("data")) {
-			subLanguageMap.put(language.get("SubLanguageID"), language.get("LanguageName"));
+			subLanguageMap.put(language.get("SubLanguageID"), language.get("ISO639"));
 		}
 
 		return subLanguageMap;

@@ -39,10 +39,10 @@ class MatchAction extends AbstractAction {
 			return;
 		}
 
-		try {
-			withWaitCursor(evt.getSource(), () -> {
+		withWaitCursor(evt.getSource(), () -> {
+			try {
 				Matcher<Object, File> matcher = new Matcher<Object, File>(model.values(), model.candidates(), false, EpisodeMetrics.defaultSequence(true));
-				List<Match<Object, File>> matches = ProgressMonitor.runTask("Match", "Find optimal alignment. This may take a while.", (message, progress, cancelled) -> {
+				List<Match<Object, File>> matches = ProgressMonitor.runTask("Match", "Finding optimal alignment. This may take a while.", (message, progress, cancelled) -> {
 					message.accept(String.format("Checking %d combinations...", matcher.remainingCandidates().size() * matcher.remainingValues().size()));
 					return matcher.match();
 				}).get();
@@ -53,12 +53,12 @@ class MatchAction extends AbstractAction {
 
 				// insert objects that could not be matched at the end of the model
 				model.addAll(matcher.remainingValues(), matcher.remainingCandidates());
-			});
-		} catch (CancellationException e) {
-			debug.finest(e::toString);
-		} catch (Throwable e) {
-			log.log(Level.WARNING, e.getMessage(), e);
-		}
+			} catch (CancellationException e) {
+				debug.finest(e::toString);
+			} catch (Throwable e) {
+				log.log(Level.WARNING, e.getMessage(), e);
+			}
+		});
 	}
 
 }

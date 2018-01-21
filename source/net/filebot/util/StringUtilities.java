@@ -13,9 +13,11 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Spliterators.AbstractSpliterator;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 public final class StringUtilities {
@@ -29,7 +31,7 @@ public final class StringUtilities {
 		Matcher matcher = DIGIT.matcher(s);
 		while (matcher.find()) {
 			try {
-				numbers.add(new Integer(matcher.group()));
+				numbers.add(Integer.parseInt(matcher.group()));
 			} catch (NumberFormatException e) {
 				// ignore
 			}
@@ -45,7 +47,7 @@ public final class StringUtilities {
 		Matcher matcher = DIGIT.matcher(s);
 		if (matcher.find()) {
 			try {
-				return new Integer(matcher.group());
+				return Integer.parseInt(matcher.group());
 			} catch (NumberFormatException e) {
 				// ignore
 			}
@@ -53,11 +55,43 @@ public final class StringUtilities {
 		return null;
 	}
 
+	public static String matchLastOccurrence(CharSequence s, Pattern pattern) {
+		String lastMatch = null;
+
+		Matcher matcher = pattern.matcher(s);
+		while (matcher.find()) {
+			lastMatch = matcher.group();
+		}
+
+		return lastMatch;
+	}
+
+	public static Stream<String> tokenize(CharSequence s) {
+		return tokenize(s, SPACE);
+	}
+
+	public static Stream<String> tokenize(CharSequence s, Pattern pattern) {
+		return pattern.splitAsStream(s).filter(w -> w.length() > 0);
+	}
+
 	public static Stream<String> streamMatches(CharSequence s, Pattern pattern) {
-		return stream(new MatcherSpliterator(pattern.matcher(s)), false).map(MatchResult::group);
+		return streamMatches(s, pattern, MatchResult::group);
+	}
+
+	public static <T> Stream<T> streamMatches(CharSequence s, Pattern pattern, Function<MatchResult, T> mapper) {
+		return stream(new MatcherSpliterator(pattern.matcher(s)), false).map(mapper);
+	}
+
+	public static Stream<String> streamCapturingGroups(MatchResult match) {
+		// Group 0 is the entire match and not the first capturing group
+		return IntStream.rangeClosed(1, match.groupCount()).mapToObj(match::group).filter(Objects::nonNull);
 	}
 
 	public static boolean find(String s, Pattern pattern) {
+		if (s == null || s.length() == 0) {
+			return false;
+		}
+
 		return pattern.matcher(s).find();
 	}
 
@@ -118,10 +152,15 @@ public final class StringUtilities {
 			if (!m.find()) {
 				return false;
 			}
-			f.accept(m.toMatchResult());
+
+			f.accept(m);
 			return true;
 		}
 
+	}
+
+	private StringUtilities() {
+		throw new UnsupportedOperationException();
 	}
 
 }

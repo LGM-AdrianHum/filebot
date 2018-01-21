@@ -19,10 +19,9 @@ import java.util.Map.Entry;
 import java.util.concurrent.ExecutorService;
 import java.util.logging.Level;
 
-import net.filebot.MediaTypes;
 import net.filebot.hash.HashType;
 import net.filebot.hash.VerificationFileReader;
-import net.filebot.mac.MacAppUtilities;
+import net.filebot.platform.mac.MacAppUtilities;
 import net.filebot.ui.transfer.BackgroundFileTransferablePolicy;
 import net.filebot.util.ExceptionUtilities;
 import net.filebot.util.FileSet;
@@ -96,7 +95,7 @@ class ChecksumTableTransferablePolicy extends BackgroundFileTransferablePolicy<C
 			// handle single folder drop
 			if (files.size() == 1 && containsOnly(files, FOLDERS)) {
 				for (File folder : files) {
-					for (File file : getChildren(folder, NOT_HIDDEN, CASE_INSENSITIVE_PATH)) {
+					for (File file : getChildren(folder, NOT_HIDDEN, HUMAN_NAME_ORDER)) {
 						load(file, null, folder);
 					}
 				}
@@ -179,7 +178,7 @@ class ChecksumTableTransferablePolicy extends BackgroundFileTransferablePolicy<C
 
 		if (absoluteFile.isDirectory()) {
 			// load all files in the file tree
-			for (File child : getChildren(absoluteFile, NOT_HIDDEN, CASE_INSENSITIVE_PATH)) {
+			for (File child : getChildren(absoluteFile, NOT_HIDDEN, HUMAN_NAME_ORDER)) {
 				load(child, relativeFile, root);
 			}
 		} else {
@@ -247,7 +246,7 @@ class ChecksumTableTransferablePolicy extends BackgroundFileTransferablePolicy<C
 
 				if (seenLevel == null) {
 					// folder we have never encountered before
-					for (File verificationFile : getChildren(folder, MediaTypes.getDefaultFilter("verification"))) {
+					for (File verificationFile : getChildren(folder, VERIFICATION_FILES)) {
 						HashType hashType = getHashType(verificationFile);
 						cache.put(verificationFile, importVerificationFile(verificationFile, hashType, verificationFile.getParentFile()));
 						types.put(verificationFile, hashType);

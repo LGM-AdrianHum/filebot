@@ -35,7 +35,6 @@ import javax.swing.KeyStroke;
 import javax.swing.ListSelectionModel;
 import javax.swing.RowFilter;
 import javax.swing.SwingUtilities;
-import javax.swing.event.DocumentEvent;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableColumnModel;
@@ -70,15 +69,15 @@ public class SubtitleViewer extends JFrame {
 		titleLabel.setText(title);
 		titleLabel.setFont(titleLabel.getFont().deriveFont(BOLD));
 
-		JPanel header = new JPanel(new MigLayout("insets dialog, nogrid, fillx"));
+		JPanel header = new JPanel(new MigLayout("insets dialog, nogrid, novisualpadding, fillx"));
 
 		header.setBackground(Color.white);
 		header.setBorder(new SeparatorBorder(1, new Color(0xB4B4B4), new Color(0xACACAC), GradientStyle.LEFT_TO_RIGHT, Position.BOTTOM));
 
-		header.add(titleLabel, "wrap");
-		header.add(infoLabel, "gap indent*2, wrap paragraph:push");
+		header.add(titleLabel, "wrap, h pref!");
+		header.add(infoLabel, "gap indent*2, h pref!, wrap");
 
-		JPanel content = new JPanel(new MigLayout("fill, insets dialog, nogrid", "[fill]", "[pref!][fill]"));
+		JPanel content = new JPanel(new MigLayout("fill, insets dialog, nogrid, novisualpadding", "[fill]", "[pref!][fill]"));
 
 		content.add(new JLabel("Filter:"), "gap indent:push");
 		content.add(filterEditor, "wmin 120px, gap rel");
@@ -86,9 +85,9 @@ public class SubtitleViewer extends JFrame {
 		content.add(new JScrollPane(subtitleTable), "grow");
 
 		JComponent pane = (JComponent) getContentPane();
-		pane.setLayout(new MigLayout("fill, insets 0 0 rel 0"));
+		pane.setLayout(new MigLayout("fill, novisualpadding, insets 0 0 rel 0"));
 
-		pane.add(header, "hmin 20px, growx, dock north");
+		pane.add(header, "h min!, growx, dock north");
 		pane.add(content, "grow");
 
 		// initialize window properties
@@ -122,7 +121,7 @@ public class SubtitleViewer extends JFrame {
 
 			@Override
 			public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
-				return super.getTableCellRendererComponent(table, timeFormat.format(value), isSelected, hasFocus, row, column);
+				return super.getTableCellRendererComponent(table, value == null ? null : timeFormat.format(value), isSelected, hasFocus, row, column);
 			}
 		});
 
@@ -131,7 +130,7 @@ public class SubtitleViewer extends JFrame {
 
 			@Override
 			public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
-				return super.getTableCellRendererComponent(table, replaceSpace(value.toString(), " "), isSelected, hasFocus, row, column);
+				return super.getTableCellRendererComponent(table, value == null ? null : replaceSpace(value.toString(), " "), isSelected, hasFocus, row, column);
 			}
 		});
 
@@ -180,13 +179,9 @@ public class SubtitleViewer extends JFrame {
 		};
 
 		// update sequence and element filter on change
-		editor.getDocument().addDocumentListener(new LazyDocumentListener(0) {
-
-			@Override
-			public void update(DocumentEvent e) {
-				setTableFilter(editor.getText());
-			}
-		});
+		editor.getDocument().addDocumentListener(new LazyDocumentListener(0, evt -> {
+			setTableFilter(editor.getText());
+		}));
 
 		return editor;
 	}

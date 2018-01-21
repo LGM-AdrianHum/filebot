@@ -2,6 +2,9 @@ package net.filebot.ui;
 
 import static java.awt.event.InputEvent.*;
 import static java.awt.event.KeyEvent.*;
+import static java.util.Arrays.*;
+import static java.util.Comparator.*;
+import static javax.swing.BorderFactory.*;
 import static javax.swing.KeyStroke.*;
 import static javax.swing.ScrollPaneConstants.*;
 import static net.filebot.Logging.*;
@@ -9,8 +12,9 @@ import static net.filebot.Settings.*;
 import static net.filebot.util.ui.SwingUI.*;
 
 import java.awt.Color;
-import java.awt.Cursor;
+import java.awt.Desktop;
 import java.awt.Dialog.ModalExclusionType;
+import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.dnd.DropTarget;
 import java.awt.dnd.DropTargetAdapter;
@@ -19,7 +23,6 @@ import java.awt.dnd.DropTargetDropEvent;
 import java.awt.dnd.DropTargetEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
-import java.io.IOException;
 import java.util.logging.Level;
 
 import javax.swing.JComponent;
@@ -30,18 +33,12 @@ import javax.swing.ListSelectionModel;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
-import javax.swing.border.CompoundBorder;
-import javax.swing.border.EmptyBorder;
-import javax.swing.border.LineBorder;
-import javax.swing.event.ListSelectionEvent;
-import javax.swing.event.ListSelectionListener;
 
 import com.google.common.eventbus.Subscribe;
 
 import net.filebot.CacheManager;
 import net.filebot.Settings;
 import net.filebot.cli.GroovyPad;
-import net.filebot.mac.MacAppUtilities;
 import net.filebot.util.PreferencesMap.PreferencesEntry;
 import net.filebot.util.ui.DefaultFancyListCellRenderer;
 import net.filebot.util.ui.ShadowBorder;
@@ -56,72 +53,70 @@ public class MainFrame extends JFrame {
 	private HeaderPanel headerPanel;
 
 	public MainFrame(PanelBuilder[] panels) {
-		super(isInstalled() ? getApplicationName() : String.format("%s %s", getApplicationName(), getApplicationVersion()));
+		super(isAutoUpdateEnabled() ? getApplicationName() : String.format("%s %s", getApplicationName(), getApplicationVersion()));
 
 		selectionList = new PanelSelectionList(panels);
 		headerPanel = new HeaderPanel();
+
+		JScrollPane selectionListScrollPane = new JScrollPane(selectionList, VERTICAL_SCROLLBAR_NEVER, HORIZONTAL_SCROLLBAR_NEVER);
+		selectionListScrollPane.setOpaque(false);
+		selectionListScrollPane.setBorder(createCompoundBorder(new ShadowBorder(), isMacApp() ? createLineBorder(new Color(0x809DB8), 1, false) : selectionListScrollPane.getBorder()));
+
+		headerPanel.getTitleLabel().setBorder(createEmptyBorder(8, 90, 10, 0));
+
+		JComponent c = (JComponent) getContentPane();
+		c.setLayout(new MigLayout("insets 0, fill, hidemode 3", String.format("%dpx[fill]", isUbuntuApp() ? 110 : 95), "fill"));
+
+		c.add(selectionListScrollPane, "pos 6px 10px n 100%-12px");
+		c.add(headerPanel, "growx, dock north");
 
 		// restore selected panel
 		try {
 			selectionList.setSelectedIndex(Integer.parseInt(persistentSelectedPanel.getValue()));
 		} catch (Exception e) {
-			debug.warning(e.getMessage());
+			debug.log(Level.WARNING, e, e::getMessage);
 		}
-
-		JScrollPane selectionListScrollPane = new JScrollPane(selectionList, VERTICAL_SCROLLBAR_NEVER, HORIZONTAL_SCROLLBAR_NEVER);
-		selectionListScrollPane.setOpaque(false);
-
-		if (isMacApp()) {
-			selectionListScrollPane.setBorder(new CompoundBorder(new ShadowBorder(), new LineBorder(new Color(0x809DB8), 1, false)));
-		} else {
-			selectionListScrollPane.setBorder(new CompoundBorder(new ShadowBorder(), selectionListScrollPane.getBorder()));
-		}
-
-		headerPanel.getTitleLabel().setBorder(new EmptyBorder(8, 90, 10, 0));
-
-		JComponent c = (JComponent) getContentPane();
-		c.setLayout(new MigLayout("insets 0, fill, hidemode 3", String.format("%dpx[fill]", isUbuntuApp() ? 105 : 95), "fill"));
-
-		c.add(selectionListScrollPane, "pos 6px 10px n 100%-12px");
-		c.add(headerPanel, "growx, dock north");
 
 		// show initial panel
-		showPanel((PanelBuilder) selectionList.getSelectedValue());
+		try {
+			showPanel((PanelBuilder) selectionList.getSelectedValue());
+		} catch (Exception e) {
+			debug.log(Level.WARNING, e, e::getMessage);
+		}
 
-		selectionList.addListSelectionListener(new ListSelectionListener() {
+		selectionList.addListSelectionListener(evt -> {
+			showPanel((PanelBuilder) selectionList.getSelectedValue());
 
-			@Override
-			public void valueChanged(ListSelectionEvent e) {
-				showPanel((PanelBuilder) selectionList.getSelectedValue());
-
-				if (!e.getValueIsAdjusting()) {
-					persistentSelectedPanel.setValue(Integer.toString(selectionList.getSelectedIndex()));
-				}
+			if (!evt.getValueIsAdjusting()) {
+				persistentSelectedPanel.setValue(Integer.toString(selectionList.getSelectedIndex()));
 			}
 		});
 
-		setSize(980, 630);
+		setSize(1060, 650);
+		setMinimumSize(new Dimension(900, 340));
 
 		// KEYBOARD SHORTCUTS
-		installAction(this.getRootPane(), getKeyStroke(VK_DELETE, CTRL_MASK | SHIFT_MASK), newAction("Clear Cache", evt -> {
-			CacheManager.getInstance().clearAll();
-			log.info("Cache has been cleared");
+		installAction(getRootPane(), getKeyStroke(VK_DELETE, CTRL_DOWN_MASK | SHIFT_DOWN_MASK), newAction("Clear Cache", evt -> {
+			withWaitCursor(getRootPane(), () -> {
+				CacheManager.getInstance().clearAll();
+				log.info("Cache has been cleared");
+			});
 		}));
 
-		installAction(this.getRootPane(), getKeyStroke(VK_F5, 0), newAction("Run", evt -> {
-			try {
-				setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR)); // loading Groovy might take a while
+		installAction(getRootPane(), getKeyStroke(VK_F5, 0), newAction("Run", evt -> {
+			withWaitCursor(getRootPane(), () -> {
 				GroovyPad pad = new GroovyPad();
 
 				pad.addWindowListener(new WindowAdapter() {
+
 					@Override
 					public void windowOpened(WindowEvent e) {
-						MainFrame.this.setVisible(false);
+						setVisible(false);
 					};
 
 					@Override
 					public void windowClosing(WindowEvent e) {
-						MainFrame.this.setVisible(true);
+						setVisible(true);
 					};
 				});
 
@@ -129,16 +124,10 @@ public class MainFrame extends JFrame {
 				pad.setModalExclusionType(ModalExclusionType.TOOLKIT_EXCLUDE);
 				pad.setLocationByPlatform(true);
 				pad.setVisible(true);
-			} catch (IOException e) {
-				debug.log(Level.WARNING, e.getMessage(), e);
-			} finally {
-				setCursor(Cursor.getDefaultCursor());
-			}
+			});
 		}));
 
-		installAction(this.getRootPane(), getKeyStroke(VK_F1, 0), newAction("Help", evt -> {
-			GettingStartedStage.start();
-		}));
+		installAction(this.getRootPane(), getKeyStroke(VK_F1, 0), newAction("Help", evt -> GettingStartedStage.start()));
 
 		SwingEventBus.getInstance().register(this);
 	}
@@ -149,6 +138,9 @@ public class MainFrame extends JFrame {
 	}
 
 	private void showPanel(PanelBuilder selectedBuilder) {
+		if (selectedBuilder == null)
+			return;
+
 		JComponent contentPane = (JComponent) getContentPane();
 		JComponent selectedPanel = null;
 
@@ -188,9 +180,10 @@ public class MainFrame extends JFrame {
 			super(builders);
 
 			setCellRenderer(new PanelCellRenderer());
-			setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+			setPrototypeCellValue(stream(builders).max(comparingInt(p -> p.getName().length())).get());
 
-			setBorder(new EmptyBorder(4, 5, 4, 5));
+			setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+			setBorder(createEmptyBorder(4, 5, 4, 5));
 
 			// initialize "drag over" panel selection
 			new DropTarget(this, new DragDropListener());
@@ -215,9 +208,9 @@ public class MainFrame extends JFrame {
 				dragEnterTimer = invokeLater(SELECTDELAY_ON_DRAG_OVER, () -> {
 					selectEnabled = true;
 
-					// bring window to front when on dnd
-					if (isMacApp()) {
-						MacAppUtilities.requestForeground();
+					// bring window to front when drag-and-drop operation is in progress
+					if (Desktop.getDesktop().isSupported(Desktop.Action.APP_REQUEST_FOREGROUND)) {
+						Desktop.getDesktop().requestForeground(true);
 					} else {
 						SwingUtilities.getWindowAncestor(((DropTarget) dtde.getSource()).getComponent()).toFront();
 					}

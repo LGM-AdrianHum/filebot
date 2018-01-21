@@ -2,7 +2,6 @@ package net.filebot.ui.transfer;
 
 import static net.filebot.Logging.*;
 import static net.filebot.Settings.*;
-import static net.filebot.util.FileUtilities.*;
 
 import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.Transferable;
@@ -17,9 +16,8 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Scanner;
-import java.util.logging.Level;
 
-import net.filebot.gio.GVFS;
+import net.filebot.platform.gnome.GVFS;
 
 public class FileTransferable implements Transferable {
 
@@ -32,6 +30,14 @@ public class FileTransferable implements Transferable {
 			// will never happen
 			throw new RuntimeException(e);
 		}
+	}
+
+	public static boolean isFileListFlavor(DataFlavor flavor) {
+		return flavor.isFlavorJavaFileListType() || flavor.equals(uriListFlavor);
+	}
+
+	public static boolean hasFileListFlavor(Transferable tr) {
+		return tr.isDataFlavorSupported(DataFlavor.javaFileListFlavor) || tr.isDataFlavorSupported(FileTransferable.uriListFlavor);
 	}
 
 	private final File[] files;
@@ -79,73 +85,61 @@ public class FileTransferable implements Transferable {
 		return isFileListFlavor(flavor);
 	}
 
-	public static boolean isFileListFlavor(DataFlavor flavor) {
-		return flavor.isFlavorJavaFileListType() || flavor.equals(uriListFlavor);
-	}
-
-	public static boolean hasFileListFlavor(Transferable tr) {
-		return tr.isDataFlavorSupported(DataFlavor.javaFileListFlavor) || tr.isDataFlavorSupported(FileTransferable.uriListFlavor);
-	}
-
-	@SuppressWarnings("unchecked")
 	public static List<File> getFilesFromTransferable(Transferable tr) throws IOException, UnsupportedFlavorException {
-		if (tr.isDataFlavorSupported(DataFlavor.javaFileListFlavor) && !useGVFS()) {
-			// file list flavor
-			Object transferable = tr.getTransferData(DataFlavor.javaFileListFlavor);
-			if (transferable instanceof List) {
-				return sortByUniquePath((List<File>) transferable); // FORCE NATURAL FILE ORDER
-			} else {
-				return null; // on some platforms transferable data will not be available until the drop has been accepted
-			}
-		}
+		// On Linux, if a file is dragged from a smb share to into a java application (e.g. Ubuntu Files to FileBot)
+		// the application/x-java-file-list transfer data will be an empty list
+		// because the native uri-list flavor drop data will be a list of smb URLs (e.g. smb://10.0.0.1/data/file.txt)
+		// and not local GVFS paths (e.g. /run/user/1000/gvfs/smb-share:server=10.0.01.1,share=data/file.txt)
+		if (useGVFS()) {
+			if (tr.isDataFlavorSupported(FileTransferable.uriListFlavor)) {
+				// file URI list flavor (Linux)
 
-		if (tr.isDataFlavorSupported(FileTransferable.uriListFlavor)) {
-			// file URI list flavor (Linux)
-			Readable transferData = (Readable) tr.getTransferData(FileTransferable.uriListFlavor);
-			Scanner scanner = new Scanner(transferData);
-			List<File> files = new ArrayList<File>();
+				Readable transferData = (Readable) tr.getTransferData(FileTransferable.uriListFlavor);
 
-			while (scanner.hasNextLine()) {
-				String line = scanner.nextLine();
+				try (Scanner scanner = new Scanner(transferData)) {
+					List<File> files = new ArrayList<File>();
 
-				if (line.startsWith("#")) {
-					// the line is a comment (as per RFC 2483)
-					continue;
-				}
+					while (scanner.hasNextLine()) {
+						String line = scanner.nextLine();
 
-				try {
-					URI uri = new URI(line);
-					File file = null;
+						if (line.startsWith("#")) {
+							// the line is a comment (as per RFC 2483)
+							continue;
+						}
 
-					try {
-						// file URIs
-						file = new File(uri);
-					} catch (IllegalArgumentException exception) {
-						// try handle other GVFS URI schemes
 						try {
-							if (useGVFS()) {
-								file = GVFS.getPathForURI(uri);
+							File file = GVFS.getDefaultVFS().getPathForURI(new URI(line));
+
+							if (file == null || !file.exists()) {
+								throw new FileNotFoundException(file.getPath());
 							}
-						} catch (LinkageError error) {
-							debug.log(Level.WARNING, "Unable to resolve GVFS URI", error);
+
+							files.add(file);
+						} catch (Throwable e) {
+							debug.warning(format("GVFS: %s => %s", line, e));
 						}
 					}
 
-					if (file == null || !file.exists()) {
-						throw new FileNotFoundException(file != null ? file.getPath() : line);
-					}
-
-					files.add(file);
-				} catch (Throwable e) {
-					// URISyntaxException, IllegalArgumentException, FileNotFoundException, LinkageError, etc
-					debug.warning("Invalid file URI: " + line);
+					return files;
 				}
 			}
+		}
 
-			return sortByUniquePath(files); // FORCE NATURAL FILE ORDER
+		// Windows / Mac and default handling
+		if (tr.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+			// file list flavor
+			Object transferable = tr.getTransferData(DataFlavor.javaFileListFlavor);
+
+			if (transferable instanceof List<?>) {
+				return (List<File>) transferable;
+			}
+
+			// on some platforms transferable data will not be available until the drop has been accepted
+			return null;
 		}
 
 		// cannot get files from transferable
-		throw new UnsupportedFlavorException(null);
+		throw new UnsupportedFlavorException(DataFlavor.javaFileListFlavor);
 	}
+
 }

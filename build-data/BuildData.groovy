@@ -4,26 +4,25 @@ import java.util.regex.*
 import org.tukaani.xz.*
 
 
-/* ------------------------------------------------------------------------- */
+// ------------------------------ UPDATE LISTS ------------------------------ //
 
 
-def dir_root    = ".."
-def dir_website = "${dir_root}/website"
-def dir_data    = "${dir_website}/data"
-
-new File(dir_data).mkdirs()
+def dir_root    = project as File
+def dir_website = dir_root.resolve('website')
+def dir_data    = dir_website.resolve('data')
 
 // sort and check shared regex collections
+def dir_data_master = System.getProperty('net.filebot.data.master', 'https://raw.githubusercontent.com/filebot/data/master')
+
 ['add-series-alias.txt', 
- 'exclude-blacklist.txt', 
  'query-blacklist.txt', 
  'release-groups.txt', 
  'series-mappings.txt'
 ].each{
-	def input = new URL("https://raw.githubusercontent.com/filebot/data/master/${it}")
-	def output = new File("${dir_data}/${it}")
+	def input = new URL(dir_data_master + '/' + it)
+	def output = dir_data.resolve(it)
 
-	log.fine "Fetch $input"
+	log.finest "Fetch $input"
 	def lines = new TreeSet(String.CASE_INSENSITIVE_ORDER)
 	input.getText('UTF-8').split(/\R/)*.trim().findAll{ it.length() > 0 }.each{
 		lines << Pattern.compile(it).pattern()
@@ -34,11 +33,12 @@ new File(dir_data).mkdirs()
 }
 
 
-/* ------------------------------------------------------------------------- */
+// ------------------------------ UPDATE REVIEWS ------------------------------ //
 
 
 def reviews = []
-new File("${dir_root}/reviews.tsv").eachLine('UTF-8'){
+
+dir_root.resolve('reviews.tsv').eachLine('UTF-8'){
 	def s = it.split(/\t/, 3)*.trim()
 	reviews << [user: s[0], date: s[1], text: s[2]]
 }
@@ -46,17 +46,17 @@ reviews = reviews.sort{ it.date }
 
 def json = new groovy.json.JsonBuilder()
 json.call(reviews as List)
-json.toPrettyString().saveAs("${dir_website}/reviews.json")
+json.toPrettyString().saveAs(dir_website.resolve('reviews.json'))
 log.info "Reviews: " + reviews.size()
 
 
-/* ------------------------------------------------------------------------- */
+// ------------------------------ FUNCTIONS ------------------------------ //
 
 
-def moviedb_out = new File("${dir_data}/moviedb.txt")
-def thetvdb_out = new File("${dir_data}/thetvdb.txt")
-def anidb_out   = new File("${dir_data}/anidb.txt")
-def osdb_out    = new File("${dir_data}/osdb.txt")
+def moviedb_out = dir_data.resolve('moviedb.txt')
+def thetvdb_out = dir_data.resolve('thetvdb.txt')
+def anidb_out   = dir_data.resolve('anidb.txt')
+def osdb_out    = dir_data.resolve('osdb.txt')
 
 
 def pack(file, lines) {
@@ -76,9 +76,6 @@ def pack(file, lines) {
 }
 
 
-/* ------------------------------------------------------------------------- */
-
-
 def isValidMovieName(s) {
 	return (s.normalizePunctuation().length() >= 4) || (s=~ /^[A-Z0-9]/ && s =~ /[\p{Alnum}]{3}/)
 }
@@ -95,9 +92,8 @@ def getNamePermutations(names) {
 		return [original, s]
 	}.unique{ normalize(it) }.findAll{ it.length() > 0 }
 
-	out = out.findAll{ it.length() >= 2 && !(it ==~ /[1][0-9][1-9]/) && !(it =~ /^[a-z]/) && it =~ /^[@.\p{L}\p{Digit}]/ } // MUST START WITH UNICODE LETTER
+	out = out.findAll{ it.length() >= 2 && !(it ==~ /[1][0-9][1-9]/) && it =~ /^[@.\p{L}\p{Digit}]/ } // MUST START WITH UNICODE LETTER
 	out = out.findAll{ !MediaDetection.releaseInfo.structureRootPattern.matcher(it).matches() } // IGNORE NAMES THAT OVERLAP WITH MEDIA FOLDER NAMES
-	// out = out.findAll{ a -> names.take(1).contains(a) || out.findAll{ b -> normalize(a).startsWith(normalize(b) + ' ') }.size() == 0 } // TRY TO EXCLUDE REDUNDANT SUBSTRING DUPLICATES
 
 	return out
 }
@@ -121,68 +117,55 @@ def csv(f, delim, keyIndex, valueIndex) {
 }
 
 
-/* ------------------------------------------------------------------------- */
+// ------------------------------ BUILD MOVIE INDEX ------------------------------ //
+
 
 if (_args.mode == /no-index/) {
 	return
 }
 
-/* ------------------------------------------------------------------------- */
 
+def movies_index = [:]
 
-// BUILD moviedb index
-def omdb = []
-new File('omdbMovies.txt').eachLine('Windows-1252'){
-	def line = it.split(/\t/)
-	if (line.length > 11 && line[0] ==~ /\d+/ && line[3] ==~ /\d{4}/) {
-		def imdbid = line[1].substring(2).toInteger()
-		def name = line[2].replaceAll(/\s+/, ' ').trim()
-		def year = line[3].toInteger()
-		def runtime = line[5]
-		def genres = line[6]
-		def rating = tryQuietly{ line[12].toFloat() } ?: 0
-		def votes = tryQuietly{ line[13].replaceAll(/\D/, '').toInteger() } ?: 0
-
-		if (!(genres =~ /Short/ || votes <= 100 || rating <= 2) && ((year >= 1970 && (runtime =~ /(\d.h)|(\d{2,3}.min)/ || votes >= 1000)) || (year >= 1950 && votes >= 20000))) {
-			omdb << [imdbid.pad(7), name, year]
-		}
-	}
+['ancient-movies.txt', 'recent-movies.txt'].each{
+	movies_index << csv(it as File, '\t', 1, [1..-1])
 }
-omdb = omdb.findAll{ (it[0] as int) <= 9999999 && isValidMovieName(it[1]) }
 
-
-def tmdb_txt = new File('tmdb.txt')
+def tmdb_txt = 'tmdb.txt' as File
 def tmdb_index = csv(tmdb_txt, '\t', 1, [0..-1])
 
 def tmdb = []
-omdb.each{ m ->
+movies_index.values().each{ m ->
 	def sync = System.currentTimeMillis()
-	if (tmdb_index.containsKey(m[0]) && (sync - tmdb_index[m[0]][0].toLong()) < ((m[2].toInteger() < 2000 ? 360 : 120) * 24 * 60 * 60 * 1000L) ) {
+	if (tmdb_index.containsKey(m[0]) && (sync - tmdb_index[m[0]][0].toLong()) < ((m[1].toInteger() < 2000 ? 360 : 120) * 24 * 60 * 60 * 1000L) ) {
 		tmdb << tmdb_index[m[0]]
 		return
 	}
 	try {
 		def info = WebServices.TheMovieDB.getMovieInfo("tt${m[0]}", Locale.ENGLISH, true)
 
-		if (info.votes <= 1 || info.rating <= 2)
-			throw new IllegalArgumentException('Insufficient movie data: ' + info)
+		if (info.votes <= 1 || info.rating <= 2) {
+			throw new IllegalArgumentException('Movie not popular enough: ' + info)
+		}
 
 		def names = [info.name, info.originalName] + info.alternativeTitles
-		[info?.released?.year, m[2]].findResults{ it?.toInteger() }.unique().each{ y ->
+		[info?.released?.year, m[1]].findResults{ it?.toInteger() }.unique().each{ y ->
 			def row = [sync, m[0].pad(7), info.id.pad(7), y.pad(4)] + names
 			log.info "Update ${m[0..2]}: $row"
 			tmdb << row
 		}
 	} catch(IllegalArgumentException | FileNotFoundException e) {
-		printException(e, false)
-		def row = [sync, m[0].pad(7), 0, m[2], m[1]]
-		log.info "[BAD] Update ${m[0..2]}: $row"
+		printException(e)
+		def row = [sync, m[0].pad(7), 0, m[1], m[2]]
+		log.info "[BAD] Update $m: $row"
 		tmdb << row
 	}
 }
+
 tmdb*.join('\t').join('\n').saveAs(tmdb_txt)
 
-movies = tmdb.findResults{
+
+def movies = tmdb.findResults{
 	def ity = it[1..3] // imdb id, tmdb id, year
 	def names = getNamePermutations(it[4..-1]).findAll{ isValidMovieName(it) }
 	if (ity[0].toInteger() > 0 && ity[1].toInteger() > 0 && names.size() > 0)
@@ -197,23 +180,22 @@ if (movies.size() < 20000) { die('Movie index sanity failed:' + movies.size()) }
 pack(moviedb_out, movies*.join('\t'))
 
 
-/* ------------------------------------------------------------------------- */
+// ------------------------------ BUILD SERIES INDEX ------------------------------ //
 
 
-// BUILD tvdb index
-def tvdb_txt = new File('tvdb.txt')
+def tvdb_txt = 'tvdb.txt' as File
 def tvdb = [:]
 
 if (tvdb_txt.exists()) {
 	tvdb_txt.eachLine('UTF-8'){
-		def line = it.split('\t').toList()
-		def names = line.subList(5, line.size())
-		tvdb.put(line[1] as Integer, [line[0] as Long, line[1] as Integer, line[2], line[3] as Float, line[4] as Float] + names)
+		def line = it.split('\t') as List
+
+		tvdb.put(line[1] as Integer, [line[0] as Long, line[1] as Integer, line[2], line[3] as Float, line[4] as Float, line[5] as Integer] + line[6..<line.size()])
 	}
 }
 
 def tvdb_updates = [:] as TreeMap
-new File('updates_all.xml').eachLine('UTF-8'){
+('updates_all.xml' as File).eachLine('UTF-8'){
 	def m = (it =~ '<Series><id>(\\d+)</id><time>(\\d+)</time></Series>')
 	while(m.find()) {
 		def id = m.group(1) as Integer
@@ -232,24 +214,24 @@ tvdb_updates.values().each{ update ->
 		try {
 			retry(2, 60000) {
 				def seriesNames = []
-				def xml = new XmlSlurper().parse("http://thetvdb.com/api/BA864DEE427E384A/series/${update.id}/en.xml")
-				def imdbid = xml.Series.IMDB_ID.text()
+				def xml = new XmlSlurper().parse("https://thetvdb.com/api/BA864DEE427E384A/series/${update.id}/en.xml")
+				def imdbid = any{ xml.Series.IMDB_ID.text().match(/tt\d+/) }{ '' }
+
 				seriesNames += xml.Series.SeriesName.text()
 
-				def rating = tryQuietly{ xml.Series.Rating.text().toFloat() }
-				def votes = tryQuietly{ xml.Series.RatingCount.text().toFloat() }
+				def rating = any{ xml.Series.Rating.text().toFloat() }{ 0 }
+				def votes = any{ xml.Series.RatingCount.text().toFloat() }{ 0 }
+				def year = any{ xml.Series.FirstAired.text().match(/\d{4}/) as Integer }{ 0 }
 
 				// only retrieve additional data for reasonably popular shows
-				if (votes >= 5 && rating >= 4) {
+				if (imdbid && votes >= 3 && rating >= 4) {
 					tryLogCatch{
-						if (imdbid =~ /tt(\d+)/) {
-							seriesNames += OMDb.getMovieDescriptor(new Movie(null, 0, imdbid.match(/tt(\d+)/) as int, -1), Locale.ENGLISH).getName()
-						}
+						seriesNames += OMDb.getMovieDescriptor(new Movie(imdbid.match(/tt(\d+)/) as int), Locale.ENGLISH).getName()
 					}
 
 					// scrape extra alias titles from webpage (not supported yet by API)
 					def html = Cache.getCache('thetvdb_series_page', CacheType.Persistent).text(update.id) { 
-						return new URL("http://thetvdb.com/?tab=series&id=${it}")
+						return new URL("https://thetvdb.com/?tab=series&id=${it}")
 					}.expire(Cache.ONE_MONTH).get()
 
 					def jsoup = org.jsoup.Jsoup.parse(html)
@@ -263,19 +245,19 @@ tvdb_updates.values().each{ update ->
 												.collect{ it.attr('value') }
 												.findAll{ it?.length() > 0 }
 
-					log.info "Scraped data $akaseries and $intlseries for series $seriesNames"
+					log.fine "Scraped data $akaseries and $intlseries for series $seriesNames"
 					seriesNames += akaseries
 					seriesNames += intlseries
 				}
 
-				def data = [update.time, update.id, imdbid, rating ?: 0, votes ?: 0] + seriesNames.findAll{ it != null && it.length() > 0 }
+				def data = [update.time, update.id, imdbid, rating, votes, year] + seriesNames.findAll{ it != null && it.length() > 0 }
 				tvdb.put(update.id, data)
 				log.info "Update $update => $data"
 			}
 		}
 		catch(Throwable e) {
-			printException(e, false)
-			def data = [update.time, update.id, '', 0, 0]
+			printException(e)
+			def data = [update.time, update.id, '', 0, 0, 0]
 			tvdb.put(update.id, data)
 			log.info "[BAD] Update $update => $data"
 		}
@@ -285,36 +267,47 @@ tvdb_updates.values().each{ update ->
 // remove entries that have become invalid
 tvdb.keySet().toList().each{ id ->
 	if (tvdb_updates[id] == null) {
-		log.info "Invalid ID found: ${tvdb[id]}"
+		log.finest "Invalid ID found: ${tvdb[id]}"
 		tvdb.remove(id)
 	}
 }
 tvdb.values().findResults{ it.collect{ it.toString().replace('\t', '').trim() }.join('\t') }.join('\n').saveAs(tvdb_txt)
 
 // additional custom mappings
-def extraAliasNames = csv("${dir_data}/add-series-alias.txt")
+def extraAliasNames = csv(dir_data.resolve('add-series-alias.txt'), '\t', 0, [1..-1])
 
 def thetvdb_index = []
 tvdb.values().each{ r ->
 	def tvdb_id = r[1]
 	def rating = r[3]
 	def votes = r[4]
-	def names = r.subList(5, r.size())
+	def year = r[5]
+	def names = r[6..<r.size()]
+
+	// ignore invalid entries
+	if (names.isEmpty()) {
+		return
+	}
+
+	if (year > 0) {
+		names.add(1, names[0].replaceTrailingBrackets() + " ($year)")
+	}
 
 	def alias = extraAliasNames[names[0]]
 	if (alias) {
-		log.fine "Add alias ${names[0]} => ${alias}"
+		log.finest "Add alias ${names[0]} => ${alias}"
 		names += alias
 	}
 
-	if (alias !=null || (votes >= 5 && rating >= 4) || (votes >= 2 && rating >= 6) || (votes >= 1 && rating >= 10)) {
+	// always include if alias has been manually added
+	if (alias != null || (votes >= 5 && rating >= 4) || (votes >= 2 && rating >= 6) || (votes >= 1 && rating >= 10)) {
 		getNamePermutations(names).each{ n ->
 			thetvdb_index << [tvdb_id, n]
 		}
 	}
 }
 
-thetvdb_index = thetvdb_index.findResults{ [it[0] as Integer, it[1].replaceAll(/\s+/, ' ').trim()] }.findAll{ !(it[1] =~ /(?i:duplicate|Series.Not.Permitted)/ || it[1] =~ /\d{6,}/ || it[1].startsWith('*') || it[1].endsWith('*') || it[1].length() < 2) }
+thetvdb_index = thetvdb_index.findResults{ [it[0] as Integer, it[1].replaceAll(/\s+/, ' ').trim()] }.findAll{ !(it[1] =~ /(?i:Duplicate|Series.Not.Permitted|Episode.#\d+.\d+)/ || it[1] =~ /\d{6,}/ || it[1].startsWith('*') || it[1].endsWith('*') || it[1].length() < 2) }
 thetvdb_index = thetvdb_index.sort{ a, b -> a[0] <=> b[0] }
 
 // join and sort
@@ -325,13 +318,12 @@ if (thetvdb_txt.size() < 4000) { die('TheTVDB index sanity failed: ' + thetvdb_t
 pack(thetvdb_out, thetvdb_txt)
 
 
-/* ------------------------------------------------------------------------- */
+// ------------------------------ BUILD OSDB INDEX ------------------------------ //
 
 
-// BUILD osdb index
 def osdb = []
 
-new File('osdb.txt').eachLine('UTF-8'){
+('osdb.txt' as File).eachLine('UTF-8'){
 	def fields = it.split(/\t/)*.trim()
 
 	// 0 IDMovie, 1 IDMovieImdb, 2 MovieName, 3 MovieYear, 4 MovieKind, 5 MoviePriority
@@ -375,15 +367,14 @@ if (osdb.size() < 15000) { die('OSDB index sanity failed:' + osdb.size()) }
 pack(osdb_out, osdb*.join('\t'))
 
 
-/* ------------------------------------------------------------------------- */
+// ------------------------------ BUILD ANIDB INDEX ------------------------------ //
 
 
-// BUILD anidb index
 def anidb = new AnidbClient('filebot', 6).getAnimeTitles() as List
 def animeExcludes = [] as Set
 
 // exclude anime movies from anime index
-new File('anime-list.xml').eachLine('UTF-8') {
+('anime-list.xml' as File).eachLine('UTF-8') {
     if (it =~ /tvdbid="movie"/ || it =~ /imdbid="ttd\+"/) {
         animeExcludes << it.match(/anidbid="(\d+)"/).toInteger()
     }
@@ -395,7 +386,6 @@ def anidb_index = anidb.findResults{
 
 	def names = it.effectiveNames*.replaceAll(/\s+/, ' ')*.trim()*.replaceAll(/['`´‘’ʻ]+/, /'/)
 	names = getNamePermutations(names)
-	names = names.findAll{ stripReleaseInfo(it)?.length() > 0 }
 
 	return names.empty ? null : [it.id.pad(5)] + names.take(4)
 }

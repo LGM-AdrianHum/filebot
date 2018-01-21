@@ -52,7 +52,7 @@ hr {
 	position: absolute;
 	width: 80px;
 	right: 0px;
-	top: 36px;
+	top: 20px;
 	opacity: 0.8;
 }
 
@@ -103,6 +103,7 @@ table.reference  {
 
 table.reference > * > * > th, table.reference > * > * > td {
 	padding: 5px 20px;
+	white-space: nowrap;
 }
 
 table.reference > * > * > td {
@@ -113,6 +114,18 @@ table.reference.cli > * > * > td:first-child {
 	color: #225577;
 	font-family: Andale Mono, monospace;
 	font-size: 10.5pt;
+	font-weight: bold;
+}
+
+span.cmd {
+	color: #5C7684;
+	font-family: Andale Mono, monospace;
+	font-weight: bold;
+}
+
+span.option {
+	color: #225577;
+	font-family: Andale Mono, monospace;
 	font-weight: bold;
 }
 
@@ -161,37 +174,6 @@ h1 .description {
 	font-weight: normal;
 	font-style: italic;
 	letter-spacing: normal;
-}
-
-.social {
-	float: right;
-	position: relative;
-	right: -10px;
-	top: -15px;
-}
-
-.social * {
-	float: right;
-}
-
-.social .twitter {
-	position: relative;
-	top: 3px;
-	right: 5px;
-	width: 75px;
-}
-
-.social .facebook {
-	position: relative;
-	left: -6px;
-	top: 3px;
-	width: 90px;
-}
-
-.social .plusone {
-	position: relative;
-	top: 1px;
-	width: 86px;
 }
 
 .screenshot {
@@ -402,27 +384,6 @@ div.screencast:hover .play {
 	left: 2em;
 }
 
-#bitcoinate {
-	float: right;
-	height: 0px;
-	position: relative;
-	right: 4px;
-	bottom: 14px;
-}
-
-#bitcoinate a img {
-	width: 16px;
-	height: 16px;
-}
-
-#donate {
-	float: left;
-	height: 0px;
-	position: relative;
-	bottom: 15px;
-	left: 6px;
-}
-
 .message.box {
 	background-color: #F5F5F5;
 	border-radius: 4px;
@@ -489,17 +450,27 @@ div.screencast:hover .play {
 	border-radius: 4px;
 }
 
-#download li.macosx {
+#download li.macosx, #download li.windows {
 	list-style: none;
-	background: url('images/apple.logo.svg') no-repeat 0.3em 0.3em;
-    background-size: 24px 24px;
 	margin: 0.5em 1em 1em 1em;
-	padding: 0.5em 0.6em 0.5em 2.0em;
+	padding: 0.5em 1em 0.5em 2.4em;
 	border-radius: 4px 4px 4px 4px;
+	background-color: #fcfbfa;
 	display: inline-block;
-	background-color: ghostwhite;
-	box-shadow: 0px 0px 5px royalblue;
+	box-shadow: 0px 0px 5px #2574ce;
 }
+
+#download li.macosx {
+	background: url('images/apple.logo.svg') no-repeat 0.5em 0.27em;
+	background-size: 24px 24px;
+}
+
+#download li.windows {
+	background: url('images/microsoft.logo.svg') no-repeat 0.5em 0.3em;
+	background-size: 24px 24px;
+}
+
+/**
 
 #download li.ubuntu {
 	list-style: none; 
@@ -516,3 +487,5 @@ div.screencast:hover .play {
 #download li.ubuntu a {
 	color: rgb(221, 72, 20);
 }
+
+**/

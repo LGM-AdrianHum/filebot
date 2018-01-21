@@ -3,27 +3,29 @@ package net.filebot.util;
 import static java.nio.charset.StandardCharsets.*;
 import static java.util.Arrays.*;
 import static java.util.Collections.*;
-import static java.util.stream.Collectors.*;
+import static java.util.Comparator.*;
 import static net.filebot.Logging.*;
 import static net.filebot.util.RegularExpressions.*;
 
 import java.io.BufferedInputStream;
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileFilter;
 import java.io.FileInputStream;
 import java.io.FilenameFilter;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.FileVisitOption;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
@@ -39,11 +41,11 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.TreeSet;
-import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -112,21 +114,21 @@ public final class FileUtilities {
 		destination = resolve(source, destination);
 
 		// create parent folder if necessary and make sure that the folder structure is created, and throw exception if the folder structure can't be created
-		Files.createDirectories(destination.getParentFile().toPath());
+		Path parentFolder = destination.toPath().getParent();
+		if (Files.notExists(parentFolder, LinkOption.NOFOLLOW_LINKS)) {
+			Files.createDirectories(parentFolder);
+		}
 
 		return destination;
 	}
 
 	public static File createRelativeSymlink(File link, File target, boolean relativize) throws IOException {
 		if (relativize) {
-			// make sure we're working with the full path
-			link = link.getCanonicalFile();
-			target = target.getCanonicalFile();
-
+			// make sure we're working with the correct full path of the file or link
 			try {
-				target = link.getParentFile().toPath().relativize(target.toPath()).toFile();
+				target = link.toPath().getParent().toRealPath(LinkOption.NOFOLLOW_LINKS).relativize(target.toPath()).toFile();
 			} catch (Throwable e) {
-				// unable to relativize link target
+				log.warning(cause("Unable to relativize link target", e));
 			}
 		}
 
@@ -178,34 +180,42 @@ public final class FileUtilities {
 		}
 	}
 
-	public static File createFolders(File folder) throws IOException {
-		return Files.createDirectories(folder.toPath()).toFile();
+	public static void createFolders(File folder) throws IOException {
+		Files.createDirectories(folder.toPath());
 	}
 
 	private static final String WIN_THUMBNAIL_STORE = "Thumbs.db";
 	private static final String MAC_THUMBNAIL_STORE = ".DS_Store";
 
-	public static boolean isThumbnailStore(File f) {
-		return MAC_THUMBNAIL_STORE.equals(f.getName()) || WIN_THUMBNAIL_STORE.equalsIgnoreCase(f.getName());
+	public static boolean isThumbnailStore(File file) {
+		return MAC_THUMBNAIL_STORE.equals(file.getName()) || WIN_THUMBNAIL_STORE.equalsIgnoreCase(file.getName());
 	}
 
-	public static byte[] readFile(File source) throws IOException {
-		return Files.readAllBytes(source.toPath());
-	}
-
-	public static Stream<String> streamLines(File file) throws IOException {
-		BufferedReader reader = new BufferedReader(new UnicodeReader(new BufferedInputStream(new FileInputStream(file)), false, UTF_8), BUFFER_SIZE);
-		return reader.lines().onClose(() -> {
-			try {
-				reader.close();
-			} catch (Exception e) {
-				debug.log(Level.SEVERE, "Failed to close file: " + file, e);
-			}
-		});
+	public static byte[] readFile(File file) throws IOException {
+		return Files.readAllBytes(file.toPath());
 	}
 
 	public static String readTextFile(File file) throws IOException {
-		return streamLines(file).collect(joining(System.lineSeparator()));
+		long size = file.length();
+
+		// ignore absurdly large text files that might cause OutOfMemoryError issues
+		if (size > ONE_GIGABYTE) {
+			throw new IOException(String.format("Text file is too large: %s (%s)", file, formatSize(size)));
+		}
+
+		byte[] bytes = readFile(file);
+
+		BOM bom = BOM.detect(bytes); // check BOM
+
+		if (bom != null) {
+			return new String(bytes, bom.size(), bytes.length - bom.size(), bom.getCharset());
+		} else {
+			return new String(bytes, UTF_8);
+		}
+	}
+
+	public static List<String> readLines(File file) throws IOException {
+		return asList(NEWLINE.split(readTextFile(file)));
 	}
 
 	public static File writeFile(ByteBuffer data, File destination) throws IOException {
@@ -215,39 +225,75 @@ public final class FileUtilities {
 		return destination;
 	}
 
-	public static Reader createTextReader(File file) throws IOException {
-		CharsetDetector detector = new CharsetDetector();
-		detector.setDeclaredEncoding("UTF-8"); // small boost for UTF-8 as default encoding
-		detector.setText(new BufferedInputStream(new FileInputStream(file)));
+	public static Reader createTextReader(InputStream in, boolean guess, Charset declaredEncoding) throws IOException {
+		byte head[] = new byte[BOM.SIZE];
+		in.mark(head.length);
+		in.read(head);
+		in.reset(); // rewind
 
-		CharsetMatch charset = detector.detect();
-		if (charset != null)
-			return charset.getReader();
+		// check BOM
+		BOM bom = BOM.detect(head);
 
-		// assume UTF-8 by default
-		return new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8);
-	}
+		if (bom != null) {
+			in.skip(bom.size()); // skip BOM
+			return new InputStreamReader(in, bom.getCharset());
+		}
 
-	public static String getText(ByteBuffer data) throws IOException {
-		CharsetDetector detector = new CharsetDetector();
-		detector.setDeclaredEncoding("UTF-8"); // small boost for UTF-8 as default encoding
-		detector.setText(new ByteBufferInputStream(data));
+		// auto-detect character encoding
+		if (guess) {
+			CharsetDetector detector = new CharsetDetector();
+			detector.setDeclaredEncoding(declaredEncoding.name());
+			detector.setText(in);
+			CharsetMatch match = detector.detect();
+			if (match != null) {
+				Reader reader = match.getReader();
 
-		CharsetMatch charset = detector.detect();
-		if (charset != null) {
-			try {
-				return charset.getString();
-			} catch (RuntimeException e) {
-				throw new IOException("Failed to read text", e);
+				// reader may be null if detected character encoding is not supported
+				if (reader != null) {
+					return reader;
+				}
+
+				// ISO-8859-8-I is not supported, but ISO-8859-8 uses the same code points so we can use that instead
+				switch (match.getName()) {
+				case "ISO-8859-8-I":
+					return new InputStreamReader(in, Charset.forName("ISO-8859-8"));
+				default:
+					debug.warning("Unsupported charset: " + match.getName());
+				}
 			}
 		}
 
-		// assume UTF-8 by default
-		return UTF_8.decode(data).toString();
+		// default to declared encoding
+		return new InputStreamReader(in, declaredEncoding);
+	}
+
+	public static Reader createTextReader(File file) throws IOException {
+		return createTextReader(new BufferedInputStream(new FileInputStream(file), BUFFER_SIZE), true, UTF_8);
 	}
 
 	public static boolean equalsCaseSensitive(File a, File b) {
 		return a.getPath().equals(b.getPath());
+	}
+
+	public static boolean equalsFileContent(File a, File b) {
+		// must have the same file size
+		if (a.length() != b.length()) {
+			return false;
+		}
+
+		// must not be a folder
+		if (a.isDirectory() || b.isDirectory()) {
+			return false;
+		}
+
+		// must be equal byte by byte
+		try {
+			return FileUtils.contentEquals(a, b);
+		} catch (Exception e) {
+			log.warning(cause(e));
+		}
+
+		return false;
 	}
 
 	/**
@@ -255,7 +301,7 @@ public final class FileUtilities {
 	 *
 	 * e.g. "file.txt" -> match "txt", ".hidden" -> no match
 	 */
-	public static final Pattern EXTENSION = Pattern.compile("(?<=.[.])\\p{Alnum}+$");
+	public static final Pattern EXTENSION = Pattern.compile("(?<=.[.])[\\p{Alnum}-]+$");
 	public static final String UNC_PREFIX = "\\\\";
 
 	public static String getExtension(File file) {
@@ -307,33 +353,40 @@ public final class FileUtilities {
 	}
 
 	public static String getName(File file) {
-		if (file == null)
+		if (file == null) {
 			return null;
-		if (file.getName().isEmpty() || UNC_PREFIX.equals(file.getParent()))
+		}
+
+		// directory || root drive || network share
+		if (file.isDirectory()) {
 			return getFolderName(file);
+		}
 
 		return getNameWithoutExtension(file.getName());
 	}
 
 	public static String getFolderName(File file) {
-		if (UNC_PREFIX.equals(file.getParent()))
+		if (UNC_PREFIX.equals(file.getParent())) {
 			return file.toString();
+		}
 
-		if (file.getName().length() > 0)
-			return file.getName();
+		String name = file.getName();
+		if (name.length() > 0) {
+			return name;
+		}
 
 		// file might be a drive (only has a path, but no name)
 		return replacePathSeparators(file.toString(), "");
 	}
 
 	public static boolean isDerived(File derivate, File prime) {
-		return isDerived(getName(derivate), prime);
-	}
+		String n = getName(prime).toLowerCase();
+		String s = getName(derivate).toLowerCase();
 
-	public static boolean isDerived(String derivate, File prime) {
-		String base = getName(prime).trim().toLowerCase();
-		derivate = derivate.trim().toLowerCase();
-		return derivate.startsWith(base);
+		if (s.startsWith(n)) {
+			return s.length() == n.length() || !Character.isLetterOrDigit(s.charAt(n.length())); // e.g. x.z is not considered derived from xy.z
+		}
+		return false;
 	}
 
 	public static boolean isDerivedByExtension(File derivate, File prime) {
@@ -369,10 +422,8 @@ public final class FileUtilities {
 	}
 
 	public static List<File> sortByUniquePath(Collection<File> files) {
-		// sort by unique lower-case paths
-		TreeSet<File> sortedSet = new TreeSet<File>(CASE_INSENSITIVE_PATH);
+		TreeSet<File> sortedSet = new TreeSet<File>(CASE_INSENSITIVE_PATH_ORDER); // sort by unique lower-case paths
 		sortedSet.addAll(files);
-
 		return new ArrayList<File>(sortedSet);
 	}
 
@@ -392,7 +443,11 @@ public final class FileUtilities {
 	}
 
 	public static FileFilter not(FileFilter filter) {
-		return new NotFileFilter(filter);
+		return f -> !filter.accept(f);
+	}
+
+	public static FileFilter filter(FileFilter... filters) {
+		return f -> stream(filters).anyMatch(it -> it.accept(f));
 	}
 
 	public static List<File> listPath(File file) {
@@ -443,14 +498,16 @@ public final class FileUtilities {
 		return getChildren(folder, filter, null);
 	}
 
-	public static List<File> getChildren(File folder, FileFilter filter, Comparator<File> sorter) {
+	public static List<File> getChildren(File folder, FileFilter filter, Comparator<File> order) {
 		File[] files = filter == null ? folder.listFiles() : folder.listFiles(filter);
 
 		// children array may be null if folder permissions do not allow listing of files
 		if (files == null) {
-			files = new File[0];
-		} else if (sorter != null) {
-			sort(files, sorter);
+			return emptyList();
+		}
+
+		if (order != null) {
+			sort(files, order);
 		}
 
 		return asList(files);
@@ -458,55 +515,54 @@ public final class FileUtilities {
 
 	public static final int FILE_WALK_MAX_DEPTH = 32;
 
-	public static List<File> listFiles(File... folders) {
-		return listFiles(asList(folders));
+	public static List<File> listFiles(File folder, FileFilter filter) {
+		return listFiles(new File[] { folder }, FILE_WALK_MAX_DEPTH, filter, null);
 	}
 
-	public static List<File> listFiles(Iterable<File> folders) {
-		return listFiles(folders, FILE_WALK_MAX_DEPTH, false, true, false);
+	public static List<File> listFiles(File folder, FileFilter filter, Comparator<File> order) {
+		return listFiles(new File[] { folder }, FILE_WALK_MAX_DEPTH, filter, order);
 	}
 
-	public static List<File> listFolders(Iterable<File> folders) {
-		return listFiles(folders, FILE_WALK_MAX_DEPTH, false, false, true);
+	public static List<File> listFiles(Collection<File> folders, FileFilter filter, Comparator<File> order) {
+		return listFiles(folders.toArray(new File[0]), FILE_WALK_MAX_DEPTH, filter, order);
 	}
 
-	public static List<File> listFiles(Iterable<File> folders, int maxDepth, boolean addHidden, boolean addFiles, boolean addFolders) {
-		List<File> files = new ArrayList<File>();
+	public static List<File> listFiles(File[] files, int depth, FileFilter filter, Comparator<File> order) {
+		List<File> sink = new ArrayList<File>();
 
-		// collect files from directory tree
-		for (File it : folders) {
-			if (!addHidden && it.isHidden()) // ignore hidden files
-				continue;
+		// traverse file tree recursively
+		streamFiles(files, FOLDERS, order).forEach(f -> listFiles(f, sink, depth, filter, order));
 
-			if (it.isDirectory()) {
-				if (addFolders) {
-					files.add(it);
-				}
-				listFiles(it, files, 0, maxDepth, addHidden, addFiles, addFolders);
-			} else if (addFiles && it.isFile()) {
-				files.add(it);
-			}
+		// add selected files in preferred order
+		streamFiles(files, filter, order).forEach(sink::add);
+
+		return sink;
+	}
+
+	private static void listFiles(File folder, List<File> sink, int depth, FileFilter filter, Comparator<File> order) {
+		if (depth < 0) {
+			return;
 		}
 
-		return files;
+		// children array may be null if folder permissions do not allow listing of files
+		File[] files = folder.listFiles(NOT_HIDDEN);
+
+		// traverse file tree recursively
+		streamFiles(files, FOLDERS, order).forEach(f -> listFiles(f, sink, depth - 1, filter, order));
+
+		// add selected files in preferred order
+		streamFiles(files, filter, order).forEach(sink::add);
 	}
 
-	private static void listFiles(File folder, List<File> files, int depth, int maxDepth, boolean addHidden, boolean addFiles, boolean addFolders) {
-		if (depth > maxDepth)
-			return;
+	private static Stream<File> streamFiles(File[] files, FileFilter filter, Comparator<File> order) {
+		if (files == null || files.length == 0) {
+			return Stream.empty();
+		}
 
-		for (File it : getChildren(folder)) {
-			if (!addHidden && it.isHidden()) // ignore hidden files
-				continue;
-
-			if (it.isDirectory()) {
-				if (addFolders) {
-					files.add(it);
-				}
-				listFiles(it, files, depth + 1, maxDepth, addHidden, addFiles, addFolders);
-			} else if (addFiles) {
-				files.add(it);
-			}
+		if (order == null) {
+			return stream(files).filter(filter::accept);
+		} else {
+			return stream(files).filter(filter::accept).sorted(order);
 		}
 	}
 
@@ -608,11 +664,12 @@ public final class FileUtilities {
 	}
 
 	public static String normalizePathSeparators(String path) {
-		// special handling for UNC paths
-		if (path.startsWith(UNC_PREFIX) && path.length() > 2) {
-			return UNC_PREFIX + path.substring(2).replace('\\', '/');
+		// special handling for UNC paths (e.g. \\server\share\path)
+		if (path.startsWith(UNC_PREFIX)) {
+			return UNC_PREFIX + normalizePathSeparators(path.substring(UNC_PREFIX.length()));
 		}
-		return path.replace('\\', '/');
+
+		return replacePathSeparators(path, "/");
 	}
 
 	public static String replacePathSeparators(CharSequence path) {
@@ -659,36 +716,32 @@ public final class FileUtilities {
 
 	public static final int BUFFER_SIZE = 64 * 1024;
 
-	public static final long KILO = 1024;
-	public static final long MEGA = 1024 * KILO;
-	public static final long GIGA = 1024 * MEGA;
+	public static final long ONE_KILOBYTE = 1000;
+	public static final long ONE_MEGABYTE = 1000 * ONE_KILOBYTE;
+	public static final long ONE_GIGABYTE = 1000 * ONE_MEGABYTE;
 
 	public static String formatSize(long size) {
-		if (size >= GIGA)
-			return String.format("%,d GB", size / GIGA);
-		else if (size >= MEGA)
-			return String.format("%,d MB", size / MEGA);
-		else if (size >= KILO)
-			return String.format("%,d KB", size / KILO);
-		else
-			return String.format("%,d bytes", size);
+		if (size >= 100 * ONE_GIGABYTE)
+			return String.format("%,d GB", size / ONE_GIGABYTE);
+		if (size >= 10 * ONE_GIGABYTE)
+			return String.format("%.1f GB", (double) size / ONE_GIGABYTE);
+		if (size >= ONE_GIGABYTE)
+			return String.format("%.2f GB", (double) size / ONE_GIGABYTE);
+		if (size >= 10 * ONE_MEGABYTE)
+			return String.format("%,d MB", size / ONE_MEGABYTE);
+		if (size >= ONE_MEGABYTE)
+			return String.format("%.1f MB", (double) size / ONE_MEGABYTE);
+		if (size >= ONE_KILOBYTE)
+			return String.format("%,d KB", size / ONE_KILOBYTE);
+
+		return String.format("%,d bytes", size);
 	}
 
-	public static final FileFilter FOLDERS = new FileFilter() {
+	public static final FileFilter FOLDERS = File::isDirectory;
 
-		@Override
-		public boolean accept(File file) {
-			return file.isDirectory();
-		}
-	};
+	public static final FileFilter FILES = File::isFile;
 
-	public static final FileFilter FILES = new FileFilter() {
-
-		@Override
-		public boolean accept(File file) {
-			return file.isFile();
-		}
-	};
+	public static final FileFilter NOT_HIDDEN = not(File::isHidden);
 
 	public static final FileFilter TEMPORARY = new FileFilter() {
 
@@ -696,15 +749,7 @@ public final class FileUtilities {
 
 		@Override
 		public boolean accept(File file) {
-			return file.getAbsolutePath().startsWith(tmpdir);
-		}
-	};
-
-	public static final FileFilter NOT_HIDDEN = new FileFilter() {
-
-		@Override
-		public boolean accept(File file) {
-			return !file.isHidden();
+			return file.getPath().startsWith(tmpdir);
 		}
 	};
 
@@ -787,6 +832,16 @@ public final class FileUtilities {
 			}
 			return s.toString();
 		}
+
+		public static ExtensionFileFilter union(ExtensionFileFilter... filters) {
+			List<String> extensions = new ArrayList<String>();
+			for (ExtensionFileFilter it : filters) {
+				if (!it.acceptAny()) {
+					addAll(extensions, it.extensions());
+				}
+			}
+			return new ExtensionFileFilter(extensions);
+		}
 	}
 
 	public static class RegexFileFilter implements FileFilter, FilenameFilter {
@@ -808,27 +863,9 @@ public final class FileUtilities {
 		}
 	}
 
-	public static class NotFileFilter implements FileFilter {
+	public static final Comparator<File> CASE_INSENSITIVE_PATH_ORDER = comparing(File::getPath, String.CASE_INSENSITIVE_ORDER);
 
-		public FileFilter filter;
-
-		public NotFileFilter(FileFilter filter) {
-			this.filter = filter;
-		}
-
-		@Override
-		public boolean accept(File file) {
-			return !filter.accept(file);
-		}
-	}
-
-	public static final Comparator<File> CASE_INSENSITIVE_PATH = new Comparator<File>() {
-
-		@Override
-		public int compare(File o1, File o2) {
-			return o1.getPath().compareToIgnoreCase(o2.getPath());
-		}
-	};
+	public static final Comparator<File> HUMAN_NAME_ORDER = comparing(File::getName, new AlphanumComparator(Locale.ENGLISH));
 
 	/**
 	 * Dummy constructor to prevent instantiation.

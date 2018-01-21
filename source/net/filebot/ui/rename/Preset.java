@@ -1,21 +1,26 @@
 package net.filebot.ui.rename;
 
 import static java.util.Collections.*;
-import static net.filebot.util.ui.SwingUI.*;
+import static net.filebot.Logging.*;
+import static net.filebot.Settings.*;
+import static net.filebot.WebServices.*;
+import static net.filebot.util.FileUtilities.*;
 
-import java.awt.event.ActionEvent;
 import java.io.File;
+import java.io.FileFilter;
 import java.util.List;
+import java.util.logging.Level;
+import java.util.stream.Stream;
 
+import javax.swing.Icon;
+
+import net.filebot.CachedResource.Transform;
 import net.filebot.Language;
-import net.filebot.Settings;
 import net.filebot.StandardRenameAction;
-import net.filebot.WebServices;
 import net.filebot.format.ExpressionFileFilter;
+import net.filebot.format.ExpressionFileFormat;
 import net.filebot.format.ExpressionFilter;
 import net.filebot.format.ExpressionFormat;
-import net.filebot.mac.MacAppUtilities;
-import net.filebot.util.FileUtilities;
 import net.filebot.web.Datasource;
 import net.filebot.web.EpisodeListProvider;
 import net.filebot.web.MovieIdentificationService;
@@ -51,123 +56,114 @@ public class Preset {
 	}
 
 	public File getInputFolder() {
-		return path == null || path.isEmpty() ? null : new File(path);
+		return getValue(path, File::new);
 	}
 
 	public ExpressionFileFilter getIncludeFilter() {
-		try {
-			return path == null || path.isEmpty() || includes == null || includes.isEmpty() ? null : new ExpressionFileFilter(new ExpressionFilter(includes), false);
-		} catch (Exception e) {
-			return null;
-		}
+		return getInputFolder() == null ? null : getValue(includes, expression -> new ExpressionFileFilter(expression));
 	}
 
-	public ExpressionFormat getFormat() {
-		try {
-			return format == null || format.isEmpty() ? null : new ExpressionFormat(format);
-		} catch (Exception e) {
-			return null;
-		}
-	}
-
-	public List<File> selectInputFiles(ActionEvent evt) {
-		File folder = getInputFolder();
-		ExpressionFileFilter filter = getIncludeFilter();
-
-		if (folder == null) {
-			return null;
-		}
-
-		if (Settings.isMacSandbox()) {
-			if (!MacAppUtilities.askUnlockFolders(getWindow(evt.getSource()), singleton(getInputFolder()))) {
-				throw new IllegalStateException("Unable to access folder: " + folder);
-			}
-		}
-
-		List<File> files = FileUtilities.listFiles(getInputFolder());
-		if (filter != null) {
-			files = FileUtilities.filter(files, filter);
-		}
-		return files;
-	}
-
-	public AutoCompleteMatcher getAutoCompleteMatcher() {
-		MovieIdentificationService mdb = WebServices.getMovieIdentificationService(database);
-		if (mdb != null) {
-			return new MovieMatcher(mdb);
-		}
-
-		EpisodeListProvider sdb = WebServices.getEpisodeListProvider(database);
-		if (sdb != null) {
-			return new EpisodeListMatcher(sdb, sdb == WebServices.AniDB);
-		}
-
-		MusicIdentificationService adb = WebServices.getMusicIdentificationService(database);
-		if (adb != null) {
-			return new MusicMatcher(adb);
-		}
-
-		if (PlainFileMatcher.getInstance().getIdentifier().equals(database)) {
-			return PlainFileMatcher.getInstance();
-		}
-
-		throw new IllegalStateException(database);
-	}
-
-	public Datasource getDatasource() {
-		if (database == null || database.isEmpty()) {
-			return null;
-		}
-
-		MovieIdentificationService mdb = WebServices.getMovieIdentificationService(database);
-		if (mdb != null) {
-			return mdb;
-		}
-
-		EpisodeListProvider sdb = WebServices.getEpisodeListProvider(database);
-		if (sdb != null) {
-			return sdb;
-		}
-
-		MusicIdentificationService adb = WebServices.getMusicIdentificationService(database);
-		if (adb != null) {
-			return adb;
-		}
-
-		if (PlainFileMatcher.getInstance().getIdentifier().equals(database)) {
-			return PlainFileMatcher.getInstance();
-		}
-
-		throw new IllegalStateException(database);
+	public ExpressionFileFormat getFormat() {
+		return getValue(format, ExpressionFileFormat::new);
 	}
 
 	public String getMatchMode() {
-		return matchMode == null || matchMode.isEmpty() ? null : matchMode;
+		return getValue(matchMode, mode -> mode);
 	}
 
 	public SortOrder getSortOrder() {
-		try {
-			return SortOrder.forName(sortOrder);
-		} catch (Exception e) {
-			return null;
-		}
+		return getValue(sortOrder, SortOrder::forName);
 	}
 
 	public Language getLanguage() {
-		return language == null || language.isEmpty() ? null : Language.getLanguage(language);
+		return getValue(language, Language::getLanguage);
 	}
 
 	public StandardRenameAction getRenameAction() {
+		return getValue(action, StandardRenameAction::forName);
+	}
+
+	public Datasource getDatasource() {
+		return getValue(database, id -> getService(id, getSupportedServices()));
+	}
+
+	public Icon getIcon() {
+		return getValue(database, id -> getService(id, getSupportedServices()).getIcon());
+	}
+
+	private <T> T getValue(String s, Transform<String, T> t) {
 		try {
-			return StandardRenameAction.forName(action);
+			return s == null || s.isEmpty() ? null : t.transform(s);
 		} catch (Exception e) {
-			return null;
+			debug.log(Level.WARNING, e, e::toString);
 		}
+		return null;
+	}
+
+	public List<File> selectFiles() {
+		File folder = getInputFolder();
+		if (folder == null || !folder.isDirectory()) {
+			return emptyList();
+		}
+
+		FileFilter filter = getIncludeFilter();
+
+		return listFiles(folder, filter == null ? FILES : f -> FILES.accept(f) && filter.accept(f), HUMAN_NAME_ORDER);
+	}
+
+	public AutoCompleteMatcher getAutoCompleteMatcher() {
+		Datasource db = getDatasource();
+
+		if (db instanceof MovieIdentificationService) {
+			return new MovieMatcher((MovieIdentificationService) db);
+		}
+
+		if (db instanceof EpisodeListProvider) {
+			return new EpisodeListMatcher((EpisodeListProvider) db, db == AniDB);
+		}
+
+		if (db instanceof MusicIdentificationService) {
+			return new MusicMatcher((MusicIdentificationService) db);
+		}
+
+		// PhotoFileMatcher / XattrFileMatcher / PlainFileMatcher
+		if (db instanceof AutoCompleteMatcher) {
+			return (AutoCompleteMatcher) db;
+		}
+
+		throw new IllegalStateException("Illegal datasource: " + db);
 	}
 
 	@Override
 	public String toString() {
 		return name;
+	}
+
+	public static Datasource[] getSupportedServices() {
+		return Stream.of(getEpisodeListProviders(), getMovieIdentificationServices(), getMusicIdentificationServices(), getGenericFileMatcherServices()).flatMap(Stream::of).toArray(Datasource[]::new);
+	}
+
+	public static Datasource[] getGenericFileMatcherServices() {
+		return new Datasource[] { new PhotoFileMatcher(), new XattrFileMatcher(), new PlainFileMatcher() };
+	}
+
+	public static StandardRenameAction[] getSupportedActions() {
+		if (isWindowsApp()) {
+			// CoW clones not supported on Windows
+			return new StandardRenameAction[] { StandardRenameAction.MOVE, StandardRenameAction.COPY, StandardRenameAction.KEEPLINK, StandardRenameAction.SYMLINK, StandardRenameAction.HARDLINK };
+		} else {
+			// CoW clones / reflinks supported on macOS and Linux
+			return new StandardRenameAction[] { StandardRenameAction.MOVE, StandardRenameAction.COPY, StandardRenameAction.KEEPLINK, StandardRenameAction.SYMLINK, StandardRenameAction.HARDLINK, StandardRenameAction.CLONE };
+		}
+
+	}
+
+	public static Language[] getSupportedLanguages() {
+		return Stream.of(Language.preferredLanguages(), Language.availableLanguages()).flatMap(List::stream).toArray(Language[]::new);
+	}
+
+	public static String[] getSupportedMatchModes() {
+		return new String[] { RenamePanel.MATCH_MODE_OPPORTUNISTIC, RenamePanel.MATCH_MODE_STRICT };
 	}
 
 }

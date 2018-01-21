@@ -2,30 +2,31 @@ package net.filebot.cli;
 
 import static java.util.Arrays.*;
 import static java.util.Collections.*;
+import static java.util.stream.Collectors.*;
 import static net.filebot.Logging.*;
 import static net.filebot.media.XattrMetaInfo.*;
-import static net.filebot.util.StringUtilities.*;
+import static net.filebot.util.FileUtilities.*;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileFilter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.io.StringWriter;
+import java.lang.reflect.Field;
 import java.net.Socket;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Date;
-import java.util.EnumMap;
-import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Map.Entry;
-import java.util.Set;
+import java.util.Objects;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.stream.Stream;
 
 import javax.script.Bindings;
 import javax.script.SimpleBindings;
@@ -43,9 +44,11 @@ import net.filebot.RenameAction;
 import net.filebot.StandardRenameAction;
 import net.filebot.WebServices;
 import net.filebot.format.AssociativeScriptObject;
+import net.filebot.format.ExpressionFormat;
+import net.filebot.format.MediaBindingBean;
+import net.filebot.format.SuppressedThrowables;
 import net.filebot.media.MediaDetection;
 import net.filebot.similarity.SeasonEpisodeMatcher.SxE;
-import net.filebot.util.FileUtilities;
 import net.filebot.web.Movie;
 
 public abstract class ScriptShellBaseClass extends Script {
@@ -65,14 +68,26 @@ public abstract class ScriptShellBaseClass extends Script {
 		try {
 			return super.getProperty(property);
 		} catch (MissingPropertyException e) {
-			// try user-defined default values
-			if (defaultValues != null && defaultValues.containsKey(property)) {
+			// try user-defined default values (support null values)
+			if (defaultValues.containsKey(property)) {
 				return defaultValues.get(property);
 			}
 
 			// can't use default value, rethrow original exception
 			throw e;
 		}
+	}
+
+	private ArgumentBean getArgumentBean() {
+		return (ArgumentBean) getBinding().getVariable(ScriptShell.SHELL_ARGS_BINDING_NAME);
+	}
+
+	private ScriptShell getShell() {
+		return (ScriptShell) getBinding().getVariable(ScriptShell.SHELL_BINDING_NAME);
+	}
+
+	private CmdlineInterface getCLI() {
+		return (CmdlineInterface) getBinding().getVariable(ScriptShell.SHELL_CLI_BINDING_NAME);
 	}
 
 	public void include(String input) throws Throwable {
@@ -85,8 +100,8 @@ public abstract class ScriptShellBaseClass extends Script {
 
 	public Object runScript(String input, String... argv) throws Throwable {
 		try {
-			ArgumentBean args = argv == null || argv.length == 0 ? getArgumentBean() : ArgumentBean.parse(argv);
-			return executeScript(input, asList(getArgumentBean().getArray()), args.defines, args.getFiles(false));
+			ArgumentBean args = argv == null || argv.length == 0 ? getArgumentBean() : new ArgumentBean(argv);
+			return executeScript(input, asList(getArgumentBean().getArgumentArray()), args.defines, args.getFiles(false));
 		} catch (Exception e) {
 			printException(e, true);
 		}
@@ -94,10 +109,10 @@ public abstract class ScriptShellBaseClass extends Script {
 	}
 
 	public Object executeScript(String input, Map<String, ?> bindings, Object... args) throws Throwable {
-		return executeScript(input, asList(getArgumentBean().getArray()), bindings, FileUtilities.asFileList(args));
+		return executeScript(input, asList(getArgumentBean().getArgumentArray()), bindings, asFileList(args));
 	}
 
-	public Object executeScript(String input, List<String> argv, Map<String, ?> bindings, List<File> args) throws Throwable {
+	public Object executeScript(String input, List<String> argv, Map<String, ?> bindings, List<?> args) throws Throwable {
 		// apply parent script defines
 		Bindings parameters = new SimpleBindings();
 
@@ -106,12 +121,11 @@ public abstract class ScriptShellBaseClass extends Script {
 			parameters.putAll(bindings);
 		}
 
-		parameters.put(ScriptShell.SHELL_ARGV_BINDING_NAME, argv != null ? argv.toArray(new String[0]) : new String[0]);
-		parameters.put(ScriptShell.ARGV_BINDING_NAME, args != null ? new ArrayList<File>(args) : new ArrayList<File>());
+		parameters.put(ScriptShell.SHELL_ARGS_BINDING_NAME, argv != null ? new ArgumentBean(argv.toArray(new String[0])) : new ArgumentBean());
+		parameters.put(ScriptShell.ARGV_BINDING_NAME, args != null ? asFileList(args) : new ArrayList<File>());
 
 		// run given script
-		ScriptShell shell = (ScriptShell) getBinding().getVariable(ScriptShell.SHELL_BINDING_NAME);
-		return shell.runScript(input, parameters);
+		return getShell().runScript(input, parameters);
 	}
 
 	public Object tryQuietly(Closure<?> c) {
@@ -136,18 +150,10 @@ public abstract class ScriptShellBaseClass extends Script {
 	}
 
 	public void printException(Throwable t, boolean severe) {
-		Level level = severe ? Level.SEVERE : Level.WARNING;
-
-		// print full stacktrace in debug mode
-		if (debug.isLoggable(level)) {
-			debug.log(level, t, t::getMessage);
-			return;
-		}
-
 		if (severe) {
-			log.log(level, trace(t));
+			log.log(Level.SEVERE, trace(t));
 		} else {
-			log.log(level, t::getMessage);
+			log.log(Level.WARNING, cause(t));
 		}
 	}
 
@@ -165,22 +171,26 @@ public abstract class ScriptShellBaseClass extends Script {
 
 	// define global variable: _def
 	public Map<String, String> get_def() {
-		return getArgumentBean().defines;
+		return unmodifiableMap(getArgumentBean().defines);
 	}
 
 	// define global variable: _system
 	public AssociativeScriptObject get_system() {
-		return new AssociativeScriptObject(System.getProperties());
+		return new AssociativeScriptObject(System.getProperties(), property -> null);
 	}
 
 	// define global variable: _environment
 	public AssociativeScriptObject get_environment() {
-		return new AssociativeScriptObject(System.getenv());
+		return new AssociativeScriptObject(System.getenv(), property -> null);
 	}
 
 	// Complete or session rename history
 	public Map<File, File> getRenameLog() throws IOException {
-		return getRenameLog(false);
+		return HistorySpooler.getInstance().getSessionHistory().getRenameMap();
+	}
+
+	public Map<File, File> getPersistentRenameLog() throws IOException {
+		return HistorySpooler.getInstance().getCompleteHistory().getRenameMap();
 	}
 
 	public Map<File, File> getRenameLog(boolean complete) throws IOException {
@@ -210,6 +220,18 @@ public abstract class ScriptShellBaseClass extends Script {
 		return null;
 	}
 
+	public String getMediaInfo(File file, String format) throws Exception {
+		ExpressionFormat formatter = new ExpressionFormat(format);
+
+		try {
+			return formatter.format(new MediaBindingBean(xattr.getMetaInfo(file), file));
+		} catch (SuppressedThrowables e) {
+			debug.finest(format("%s => %s", format, e));
+		}
+
+		return null;
+	}
+
 	public String detectSeriesName(Object files) throws Exception {
 		return detectSeriesName(files, false);
 	}
@@ -219,7 +241,7 @@ public abstract class ScriptShellBaseClass extends Script {
 	}
 
 	public String detectSeriesName(Object files, boolean anime) throws Exception {
-		List<File> input = FileUtilities.asFileList(files);
+		List<File> input = asFileList(files);
 		if (input.isEmpty())
 			return null;
 
@@ -246,14 +268,17 @@ public abstract class ScriptShellBaseClass extends Script {
 				return match;
 			}
 		} catch (Exception e) {
-			// ignore and move on
+			debug.log(Level.WARNING, e::toString); // ignore and move on
 		}
 
 		// 3. run full-fledged movie detection
 		try {
-			return MediaDetection.detectMovie(file, WebServices.TheMovieDB, Locale.ENGLISH, strict).get(0);
+			List<Movie> options = MediaDetection.detectMovieWithYear(file, WebServices.TheMovieDB, Locale.US, strict);
+			if (options != null && options.size() > 0) {
+				return options.get(0);
+			}
 		} catch (Exception e) {
-			// ignore and fail
+			debug.log(Level.WARNING, e::toString); // ignore and fail
 		}
 
 		return null;
@@ -265,23 +290,17 @@ public abstract class ScriptShellBaseClass extends Script {
 	}
 
 	public int execute(Object... args) throws Exception {
-		List<String> cmd = new ArrayList<String>();
+		Stream<String> cmd = stream(args).filter(Objects::nonNull).map(Objects::toString);
 
 		if (Platform.isWindows()) {
-			// normalize file separator for windows and run with cmd so any executable in PATH will just work
-			cmd.add("cmd");
-			cmd.add("/c");
+			// normalize file separator for windows and run with powershell so any executable in PATH will just work
+			cmd = Stream.concat(Stream.of("powershell", "-NonInteractive", "-NoProfile", "-NoLogo", "-ExecutionPolicy", "Bypass", "-Command"), cmd);
 		} else if (args.length == 1) {
-			// make unix shell parse arguments
-			cmd.add("sh");
-			cmd.add("-c");
+			// make Unix shell parse arguments
+			cmd = Stream.concat(Stream.of("sh", "-c"), cmd);
 		}
 
-		for (Object it : args) {
-			cmd.add(it.toString());
-		}
-
-		ProcessBuilder process = new ProcessBuilder(cmd).inheritIO();
+		ProcessBuilder process = new ProcessBuilder(cmd.collect(toList())).inheritIO();
 		return process.start().waitFor();
 	}
 
@@ -294,7 +313,7 @@ public abstract class ScriptShellBaseClass extends Script {
 
 	public void telnet(String host, int port, Closure<?> handler) throws IOException {
 		try (Socket socket = new Socket(host, port)) {
-			handler.call(new PrintStream(socket.getOutputStream(), true, "UTF-8"), new InputStreamReader(socket.getInputStream(), "UTF-8"));
+			handler.call(new PrintStream(socket.getOutputStream(), true, "UTF-8"), new BufferedReader(new InputStreamReader(socket.getInputStream(), "UTF-8")));
 		}
 	}
 
@@ -315,248 +334,225 @@ public abstract class ScriptShellBaseClass extends Script {
 		return null;
 	}
 
-	private enum Option {
-		action, conflict, query, filter, format, db, order, lang, output, encoding, strict, forceExtractAll
-	}
-
-	private static final CmdlineInterface cli = new CmdlineOperations();
-
 	public List<File> rename(Map<String, ?> parameters) throws Exception {
-		List<File> input = getInputFileList(parameters);
-		Map<Option, Object> option = getDefaultOptions(parameters);
-		RenameAction action = getRenameFunction(option.get(Option.action));
-		boolean strict = DefaultTypeTransformation.castToBoolean(option.get(Option.strict));
+		// consume all parameters
+		List<File> files = getInputFileList(parameters);
+		Map<File, File> map = files.isEmpty() ? getInputFileMap(parameters) : emptyMap(); // check map parameter if file/folder is not set
+		RenameAction action = getRenameAction(parameters);
+		ArgumentBean args = getArgumentBean(parameters);
 
-		synchronized (cli) {
-			try {
-				if (input.isEmpty() && !getInputFileMap(parameters).isEmpty()) {
-					return cli.rename(getInputFileMap(parameters), action, asString(option.get(Option.conflict)));
-				}
-
-				return cli.rename(input, action, asString(option.get(Option.conflict)), asString(option.get(Option.output)), asString(option.get(Option.format)), asString(option.get(Option.db)), asString(option.get(Option.query)), asString(option.get(Option.order)), asString(option.get(Option.filter)), asString(option.get(Option.lang)), strict);
-			} catch (Exception e) {
-				printException(e, false);
-				return null;
+		try {
+			if (files.size() > 0) {
+				return getCLI().rename(files, action, args.getConflictAction(), args.getAbsoluteOutputFolder(), args.getExpressionFileFormat(), args.getDatasource(), args.getSearchQuery(), args.getSortOrder(), args.getExpressionFilter(), args.getLanguage().getLocale(), args.isStrict(), args.getExecCommand());
 			}
+
+			if (map.size() > 0) {
+				return getCLI().rename(map, action, args.getConflictAction());
+			}
+		} catch (Exception e) {
+			printException(e);
 		}
+
+		return null;
 	}
 
 	public List<File> getSubtitles(Map<String, ?> parameters) throws Exception {
-		List<File> input = getInputFileList(parameters);
-		Map<Option, Object> option = getDefaultOptions(parameters);
-		boolean strict = DefaultTypeTransformation.castToBoolean(option.get(Option.strict));
+		List<File> files = getInputFileList(parameters);
+		ArgumentBean args = getArgumentBean(parameters);
 
-		synchronized (cli) {
-			try {
-				return cli.getSubtitles(input, asString(option.get(Option.db)), asString(option.get(Option.query)), asString(option.get(Option.lang)), asString(option.get(Option.output)), asString(option.get(Option.encoding)), asString(option.get(Option.format)), strict);
-			} catch (Exception e) {
-				printException(e, false);
-				return null;
-			}
+		try {
+			return getCLI().getSubtitles(files, args.getSearchQuery(), args.getLanguage(), args.getSubtitleOutputFormat(), args.getEncoding(), args.getSubtitleNamingFormat(), args.isStrict());
+		} catch (Exception e) {
+			printException(e);
 		}
+
+		return null;
 	}
 
 	public List<File> getMissingSubtitles(Map<String, ?> parameters) throws Exception {
-		List<File> input = getInputFileList(parameters);
-		Map<Option, Object> option = getDefaultOptions(parameters);
-		boolean strict = DefaultTypeTransformation.castToBoolean(option.get(Option.strict));
+		List<File> files = getInputFileList(parameters);
+		ArgumentBean args = getArgumentBean(parameters);
 
-		synchronized (cli) {
-			try {
-				return cli.getMissingSubtitles(input, asString(option.get(Option.db)), asString(option.get(Option.query)), asString(option.get(Option.lang)), asString(option.get(Option.output)), asString(option.get(Option.encoding)), asString(option.get(Option.format)), strict);
-			} catch (Exception e) {
-				printException(e, false);
-				return null;
-			}
+		try {
+			return getCLI().getMissingSubtitles(files, args.getSearchQuery(), args.getLanguage(), args.getSubtitleOutputFormat(), args.getEncoding(), args.getSubtitleNamingFormat(), args.isStrict());
+		} catch (Exception e) {
+			printException(e);
 		}
+
+		return null;
 	}
 
 	public boolean check(Map<String, ?> parameters) throws Exception {
-		List<File> input = getInputFileList(parameters);
+		List<File> files = getInputFileList(parameters);
 
-		synchronized (cli) {
-			try {
-				return cli.check(input);
-			} catch (Exception e) {
-				printException(e, false);
-				return false;
-			}
+		try {
+			return getCLI().check(files);
+		} catch (Exception e) {
+			printException(e);
 		}
+
+		return false;
 	}
 
 	public File compute(Map<String, ?> parameters) throws Exception {
-		List<File> input = getInputFileList(parameters);
-		Map<Option, Object> option = getDefaultOptions(parameters);
+		List<File> files = getInputFileList(parameters);
+		ArgumentBean args = getArgumentBean(parameters);
 
-		synchronized (cli) {
-			try {
-				return cli.compute(input, asString(option.get(Option.output)), asString(option.get(Option.encoding)));
-			} catch (Exception e) {
-				printException(e, false);
-				return null;
-			}
+		try {
+			return getCLI().compute(files, args.getOutputPath(), args.getOutputHashType(), args.getEncoding());
+		} catch (Exception e) {
+			printException(e);
 		}
+
+		return null;
 	}
 
 	public List<File> extract(Map<String, ?> parameters) throws Exception {
-		List<File> input = getInputFileList(parameters);
-		Map<Option, Object> option = getDefaultOptions(parameters);
-		FileFilter filter = (FileFilter) DefaultTypeTransformation.castToType(option.get(Option.filter), FileFilter.class);
-		boolean forceExtractAll = DefaultTypeTransformation.castToBoolean(option.get(Option.forceExtractAll));
+		List<File> files = getInputFileList(parameters);
+		FileFilter filter = getFileFilter(parameters);
+		ArgumentBean args = getArgumentBean(parameters);
 
-		synchronized (cli) {
-			try {
-				return cli.extract(input, asString(option.get(Option.output)), asString(option.get(Option.conflict)), filter, forceExtractAll);
-			} catch (Exception e) {
-				printException(e, false);
-				return null;
-			}
+		try {
+			return getCLI().extract(files, args.getOutputPath(), args.getConflictAction(), filter, args.isStrict());
+		} catch (Exception e) {
+			printException(e);
 		}
+
+		return null;
 	}
 
 	public List<String> fetchEpisodeList(Map<String, ?> parameters) throws Exception {
-		Map<Option, Object> option = getDefaultOptions(parameters);
+		ArgumentBean args = getArgumentBean(parameters);
 
-		synchronized (cli) {
-			try {
-				return cli.fetchEpisodeList(asString(option.get(Option.query)), asString(option.get(Option.format)), asString(option.get(Option.db)), asString(option.get(Option.order)), asString(option.get(Option.filter)), asString(option.get(Option.lang)));
-			} catch (Exception e) {
-				printException(e, false);
-				return null;
-			}
+		try {
+			return getCLI().fetchEpisodeList(args.getEpisodeListProvider(), args.getSearchQuery(), args.getExpressionFormat(), args.getExpressionFilter(), args.getSortOrder(), args.getLanguage().getLocale(), args.isStrict()).collect(toList());
+		} catch (Exception e) {
+			printException(e);
 		}
-	}
 
-	public String getMediaInfo(File file, String format) throws Exception {
-		return cli.getMediaInfo(singleton(file), format, null).get(0); // explicitly ignore the --filter option
-	}
-
-	public List<String> getMediaInfo(Collection<?> files, String format) throws Exception {
-		return cli.getMediaInfo(FileUtilities.asFileList(files), format, null); // explicitly ignore the --filter option
+		return null;
 	}
 
 	public Object getMediaInfo(Map<String, ?> parameters) throws Exception {
-		List<File> input = getInputFileList(parameters);
-		if (input == null || input.isEmpty()) {
-			return null;
+		List<File> files = getInputFileList(parameters);
+		ArgumentBean args = getArgumentBean(parameters);
+
+		try {
+			return getCLI().getMediaInfo(files, args.getFileFilter(), args.getExpressionFormat());
+		} catch (Exception e) {
+			printException(e);
 		}
 
-		Map<Option, Object> option = getDefaultOptions(parameters);
-		synchronized (cli) {
+		return null;
+	}
+
+	private ArgumentBean getArgumentBean(Map<String, ?> parameters) throws Exception {
+		// clone default arguments
+		ArgumentBean args = new ArgumentBean(getArgumentBean().getArgumentArray());
+
+		// for compatibility reasons [forceExtractAll: true] and [strict: true] is the same as -non-strict
+		Stream.of("forceExtractAll", "strict").map(parameters::remove).filter(Objects::nonNull).forEach(v -> {
+			args.nonStrict = !DefaultTypeTransformation.castToBoolean(v);
+		});
+
+		// override default values with given values
+		parameters.forEach((k, v) -> {
 			try {
-				List<String> lines = cli.getMediaInfo(input, asString(option.get(Option.format)), asString(option.get(Option.filter)));
-				if (parameters.containsKey("file") && !(parameters.get("file") instanceof Collection)) {
-					return lines.get(0); // HACK for script backwards compatibility
-				} else {
-					return lines;
-				}
+				Field field = args.getClass().getField(k);
+				Object value = DefaultTypeTransformation.castToType(v, field.getType());
+				field.set(args, value);
 			} catch (Exception e) {
-				printException(e, false);
-				return null;
+				throw new IllegalArgumentException("Illegal parameter: " + k, e);
 			}
-		}
+		});
+
+		return args;
 	}
 
 	private List<File> getInputFileList(Map<String, ?> parameters) {
-		Object file = parameters.get("file");
-		if (file != null) {
-			return FileUtilities.asFileList(file);
-		}
-
-		Object folder = parameters.get("folder");
-		if (folder != null) {
-			return FileUtilities.listFiles(FileUtilities.asFileList(folder), 0, false, true, false);
-		}
-
-		return emptyList();
+		// check file parameter add consume File values as they are
+		return consumeParameter(parameters, "file").map(f -> asFileList(f)).findFirst().orElseGet(() -> {
+			// check folder parameter and resolve children
+			return consumeParameter(parameters, "folder").flatMap(f -> asFileList(f).stream()).flatMap(f -> getChildren(f, FILES, HUMAN_NAME_ORDER).stream()).collect(toList());
+		});
 	}
 
 	private Map<File, File> getInputFileMap(Map<String, ?> parameters) {
-		Map<?, ?> map = (Map<?, ?>) parameters.get("map");
-		Map<File, File> files = new LinkedHashMap<File, File>();
-		if (map != null) {
-			for (Entry<?, ?> it : map.entrySet()) {
-				List<File> key = FileUtilities.asFileList(it.getKey());
-				List<File> value = FileUtilities.asFileList(it.getValue());
-				if (key.size() == 1 && value.size() == 1) {
-					files.put(key.get(0), value.get(0));
-				} else {
-					throw new IllegalArgumentException("Illegal file mapping: " + it);
-				}
-			}
-		}
-		return files;
+		// convert keys and values to files
+		Map<File, File> map = new LinkedHashMap<File, File>();
+
+		consumeParameter(parameters, "map").map(Map.class::cast).forEach(m -> {
+			m.forEach((k, v) -> {
+				File from = asFileList(k).get(0);
+				File to = asFileList(v).get(0);
+				map.put(from, to);
+			});
+		});
+
+		return map;
 	}
 
-	private ArgumentBean getArgumentBean() {
-		try {
-			return ArgumentBean.parse((String[]) getBinding().getVariable(ScriptShell.SHELL_ARGV_BINDING_NAME));
-		} catch (Exception e) {
-			throw new IllegalStateException(e.getMessage());
-		}
+	private RenameAction getRenameAction(Map<String, ?> parameters) {
+		return consumeParameter(parameters, "action").map(action -> {
+			return getRenameAction(action);
+		}).findFirst().orElse(getArgumentBean().getRenameAction()); // default to global rename action
 	}
 
-	private Map<Option, Object> getDefaultOptions(Map<String, ?> parameters) throws Exception {
-		Map<Option, Object> options = new EnumMap<Option, Object>(Option.class);
-
-		for (Entry<String, ?> it : parameters.entrySet()) {
-			try {
-				options.put(Option.valueOf(it.getKey()), it.getValue());
-			} catch (IllegalArgumentException e) {
-				// just ignore illegal options
-			}
-		}
-
-		ArgumentBean args = getArgumentBean();
-		Set<Option> complement = EnumSet.allOf(Option.class);
-		complement.removeAll(options.keySet());
-
-		for (Option missing : complement) {
-			switch (missing) {
-			case forceExtractAll:
-				options.put(missing, false);
-				break;
-			case strict:
-				options.put(missing, !args.nonStrict);
-				break;
-			default:
-				options.put(missing, args.getClass().getField(missing.name()).get(args));
-				break;
-			}
-		}
-
-		return options;
+	private FileFilter getFileFilter(Map<String, ?> parameters) {
+		return consumeParameter(parameters, "filter").map(filter -> {
+			return (FileFilter) DefaultTypeTransformation.castToType(filter, FileFilter.class);
+		}).findFirst().orElse(null);
 	}
 
-	public RenameAction getRenameFunction(final Object obj) {
+	private Stream<?> consumeParameter(Map<String, ?> parameters, String... names) {
+		return Stream.of(names).map(parameters::remove).filter(Objects::nonNull);
+	}
+
+	public RenameAction getRenameAction(Object obj) {
 		if (obj instanceof RenameAction) {
 			return (RenameAction) obj;
 		}
+
 		if (obj instanceof CharSequence) {
 			return StandardRenameAction.forName(obj.toString());
 		}
-		if (obj instanceof Closure<?>) {
-			return new RenameAction() {
 
-				private final Closure<?> closure = (Closure<?>) obj;
+		if (obj instanceof File) {
+			return new ExecutableRenameAction(obj.toString(), getArgumentBean().getOutputPath());
+		}
 
-				@Override
-				public File rename(File from, File to) throws Exception {
-					Object value = closure.call(from, to);
-
-					// must return File object, so we try the result of the closure, but if it's not a File we just return the original destination parameter
-					return value instanceof File ? (File) value : to;
-				}
-
-				@Override
-				public String toString() {
-					return "CLOSURE";
-				}
-			};
+		if (obj instanceof Closure) {
+			return new GroovyRenameAction((Closure) obj);
 		}
 
 		// object probably can't be casted
 		return (RenameAction) DefaultTypeTransformation.castToType(obj, RenameAction.class);
+	}
+
+	public <T> T showInputDialog(Collection<T> options, String title, String message) throws Exception {
+		if (options.isEmpty()) {
+			return null;
+		}
+
+		// use Text UI in interactive mode
+		if (getCLI() instanceof CmdlineOperationsTextUI) {
+			CmdlineOperationsTextUI cli = (CmdlineOperationsTextUI) getCLI();
+			return cli.showInputDialog(options, title, message);
+		}
+
+		// use Swing dialog non-headless environments
+		if (!java.awt.GraphicsEnvironment.isHeadless()) {
+			List<T> selection = new ArrayList<T>(1);
+			javax.swing.SwingUtilities.invokeAndWait(() -> {
+				T value = (T) javax.swing.JOptionPane.showInputDialog(null, message, title, javax.swing.JOptionPane.QUESTION_MESSAGE, null, options.toArray(), options.iterator().next());
+				selection.add(0, value);
+			});
+			return selection.get(0);
+		}
+
+		// just pick the first option if we can't ask the user
+		log.log(Level.CONFIG, format("Auto-Select [%s] from %s", options.iterator().next(), options));
+		return options.iterator().next();
 	}
 
 }

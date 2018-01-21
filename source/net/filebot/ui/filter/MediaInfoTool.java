@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
+import java.util.concurrent.CancellationException;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 
@@ -24,7 +25,6 @@ import javax.swing.table.TableModel;
 
 import net.filebot.mediainfo.MediaInfo;
 import net.filebot.mediainfo.MediaInfo.StreamKind;
-import net.filebot.util.FileUtilities;
 import net.filebot.util.ui.LoadingOverlayPane;
 import net.miginfocom.swing.MigLayout;
 
@@ -54,13 +54,13 @@ class MediaInfoTool extends Tool<TableModel> {
 	}
 
 	@Override
-	protected TableModel createModelInBackground(File root) throws InterruptedException {
-		if (root == null) {
+	protected TableModel createModelInBackground(List<File> root) {
+		if (root.isEmpty()) {
 			return new MediaInfoTableModel();
 		}
 
-		List<File> files = filter(FileUtilities.listFiles(root), VIDEO_FILES, AUDIO_FILES);
-		Map<MediaInfoKey, String[]> data = new TreeMap<>();
+		List<File> files = listFiles(root, filter(VIDEO_FILES, AUDIO_FILES), HUMAN_NAME_ORDER);
+		Map<MediaInfoKey, String[]> data = new TreeMap<MediaInfoKey, String[]>();
 
 		try (MediaInfo mi = new MediaInfo()) {
 			IntStream.range(0, files.size()).forEach(f -> {
@@ -75,9 +75,13 @@ class MediaInfoTool extends Tool<TableModel> {
 						});
 					});
 				} catch (IllegalArgumentException e) {
-					debug.finest(e.getMessage());
+					debug.finest(e::toString);
 				} catch (Exception e) {
-					debug.warning(e.getMessage());
+					debug.warning(e::toString);
+				}
+
+				if (Thread.interrupted()) {
+					throw new CancellationException();
 				}
 			});
 		}

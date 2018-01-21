@@ -15,6 +15,7 @@ public class FileBotMenuBar {
 		help.add(createLink("Getting Started", getApplicationProperty("link.intro")));
 		help.add(createLink("FAQ", getApplicationProperty("link.faq")));
 		help.add(createLink("Forums", getApplicationProperty("link.forums")));
+		help.add(createLink("Discord Channel", getApplicationProperty("link.channel")));
 
 		help.addSeparator();
 
@@ -30,11 +31,6 @@ public class FileBotMenuBar {
 
 		help.add(createLink("Contact us on Twitter", getApplicationProperty("link.twitter")));
 		help.add(createLink("Contact us on Facebook", getApplicationProperty("link.facebook")));
-
-		if (isMacSandbox()) {
-			help.addSeparator();
-			help.add(createLink("Where is FileBot Subtitles?", getApplicationProperty("link.subtitles.mas")));
-		}
 
 		JMenuBar menuBar = new JMenuBar();
 		menuBar.add(help);

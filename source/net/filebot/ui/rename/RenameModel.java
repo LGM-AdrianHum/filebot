@@ -1,6 +1,7 @@
 package net.filebot.ui.rename;
 
 import static java.util.Collections.*;
+import static net.filebot.util.ExceptionUtilities.*;
 import static net.filebot.util.FileUtilities.*;
 
 import java.beans.PropertyChangeEvent;
@@ -20,7 +21,6 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
-import javax.script.ScriptException;
 import javax.swing.SwingWorker;
 import javax.swing.SwingWorker.StateValue;
 
@@ -45,13 +45,12 @@ public class RenameModel extends MatchModel<Object, File> {
 
 		@Override
 		public String preview(Match<?, ?> match) {
-			return format(match, null);
+			return replacePathSeparators(String.valueOf(match.getValue())).trim(); // clean up path separators like / or \
 		}
 
 		@Override
-		public String format(Match<?, ?> match, Map<?, ?> context) {
-			// clean up path separators like / or \
-			return replacePathSeparators(String.valueOf(match.getValue())).trim();
+		public String format(Match<?, ?> match, boolean extension, Map<?, ?> context) {
+			return preview(match);
 		}
 	};
 
@@ -71,10 +70,13 @@ public class RenameModel extends MatchModel<Object, File> {
 
 	public void setPreserveExtension(boolean preserveExtension) {
 		this.preserveExtension = preserveExtension;
+
+		// update formatted names
+		names.refresh();
 	}
 
-	public Map<File, String> getRenameMap() {
-		Map<File, String> map = new LinkedHashMap<File, String>();
+	public Map<File, File> getRenameMap() {
+		Map<File, File> map = new LinkedHashMap<File, File>();
 
 		for (int i = 0; i < names.size(); i++) {
 			if (hasComplement(i)) {
@@ -104,8 +106,8 @@ public class RenameModel extends MatchModel<Object, File> {
 				}
 
 				// insert mapping
-				if (map.put(source, destination.toString()) != null) {
-					throw new IllegalStateException(String.format("Duplicate file: \"%s\"", source.getName()));
+				if (map.put(source, new File(destination.toString())) != null) {
+					throw new IllegalStateException("Duplicate source file: " + source.getName());
 				}
 			}
 		}
@@ -213,7 +215,7 @@ public class RenameModel extends MatchModel<Object, File> {
 					Match<Object, File> match = getMatch(index);
 
 					// create new future
-					final FormattedFuture future = new FormattedFuture(match, getFormatter(match), getMatchContext(match));
+					FormattedFuture future = new FormattedFuture(match, !preserveExtension, getFormatter(match), getMatchContext(match));
 
 					// update data
 					if (type == ListEvent.INSERT) {
@@ -261,7 +263,7 @@ public class RenameModel extends MatchModel<Object, File> {
 			for (int i = 0; i < size(); i++) {
 				FormattedFuture obsolete = futures.get(i);
 				Match<Object, File> match = obsolete.getMatch();
-				FormattedFuture future = new FormattedFuture(match, getFormatter(match), getMatchContext(match));
+				FormattedFuture future = new FormattedFuture(match, !preserveExtension, getFormatter(match), getMatchContext(match));
 
 				// replace and cancel old future
 				cancel(futures.set(i, future));
@@ -308,12 +310,14 @@ public class RenameModel extends MatchModel<Object, File> {
 	public static class FormattedFuture extends SwingWorker<String, Void> {
 
 		private final Match<Object, File> match;
+		private final boolean extension;
 		private final Map<File, Object> context;
 
 		private final MatchFormatter formatter;
 
-		private FormattedFuture(Match<Object, File> match, MatchFormatter formatter, Map<File, Object> context) {
+		private FormattedFuture(Match<Object, File> match, boolean extension, MatchFormatter formatter, Map<File, Object> context) {
 			this.match = match;
+			this.extension = extension;
 			this.formatter = formatter;
 			this.context = context;
 		}
@@ -332,7 +336,7 @@ public class RenameModel extends MatchModel<Object, File> {
 
 		@Override
 		protected String doInBackground() throws Exception {
-			return formatter.format(match, context).trim();
+			return formatter.format(match, extension, context).trim();
 		}
 
 		@Override
@@ -340,12 +344,12 @@ public class RenameModel extends MatchModel<Object, File> {
 			if (isDone()) {
 				try {
 					return get(0, TimeUnit.SECONDS);
-				} catch (Throwable e) {
+				} catch (Throwable t) {
 					// find the original exception
-					while (e instanceof ExecutionException || e instanceof ScriptException) {
-						e = e.getCause();
+					if (t.getCause() != null && t instanceof ExecutionException) {
+						t = t.getCause();
 					}
-					return String.format("[%s: %s] %s", e.getClass().getSimpleName(), e.getMessage(), preview());
+					return String.format("[%s] %s", getMessage(t), preview());
 				}
 			}
 

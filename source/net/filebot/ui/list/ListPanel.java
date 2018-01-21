@@ -27,11 +27,7 @@ import javax.swing.JSpinner;
 import javax.swing.JSpinner.NumberEditor;
 import javax.swing.JTextField;
 import javax.swing.SpinnerNumberModel;
-import javax.swing.SwingUtilities;
 import javax.swing.TransferHandler;
-import javax.swing.event.DocumentEvent;
-import javax.swing.text.AttributeSet;
-import javax.swing.text.BadLocationException;
 
 import org.fife.ui.rsyntaxtextarea.RSyntaxDocument;
 import org.fife.ui.rsyntaxtextarea.RSyntaxTextArea;
@@ -59,7 +55,7 @@ public class ListPanel extends JComponent {
 
 	public static final String DEFAULT_SEQUENCE_FORMAT = "Sequence - {i.pad(2)}";
 	public static final String DEFAULT_FILE_FORMAT = "{fn}";
-	public static final String DEFAULT_EPISODE_FORMAT = "{n} - {s00e00} - [{airdate.format(/dd MMM YYYY/)}] - {t}";
+	public static final String DEFAULT_EPISODE_FORMAT = "{n} - {s00e00} - [{absolute}] - [{airdate}] - {t}";
 
 	private RSyntaxTextArea editor = createEditor();
 	private SpinnerNumberModel fromSpinnerModel = new SpinnerNumberModel(1, 0, Integer.MAX_VALUE, 1);
@@ -107,17 +103,14 @@ public class ListPanel extends JComponent {
 				super.configureListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
 
 				ListItem item = (ListItem) value;
-				String text = item.getFormattedValue(); // format just-in-time
+				Object object = item.getFormattedValue(); // format just-in-time
 
-				if (text.isEmpty()) {
-					if (item.getFormat() != null && item.getFormat().caughtScriptException() != null) {
-						setText(item.getFormat().caughtScriptException().getMessage());
-					} else {
-						setText("Expression yields no results for value " + item.getObject());
-					}
+				if (object instanceof Exception) {
+					Exception error = (Exception) object;
+					setText(error.getMessage());
 					setIcon(ResourceManager.getIcon("status.warning"));
 				} else {
-					setText(text);
+					setText(object.toString());
 					setIcon(null);
 				}
 			}
@@ -162,20 +155,11 @@ public class ListPanel extends JComponent {
 		list.add(buttonPanel, BorderLayout.SOUTH);
 
 		// initialize with default values
-		SwingUtilities.invokeLater(() -> {
-			if (list.getModel().isEmpty()) {
-				createItemSequence();
-			}
-		});
+		createItemSequence();
 	}
 
 	private RSyntaxTextArea createEditor() {
-		RSyntaxTextArea editor = new RSyntaxTextArea(new RSyntaxDocument(SyntaxConstants.SYNTAX_STYLE_GROOVY) {
-			@Override
-			public void insertString(int offs, String str, AttributeSet a) throws BadLocationException {
-				super.insertString(offs, str.replaceAll("\\R", ""), a); // FORCE SINGLE LINE
-			}
-		}, null, 1, 80);
+		RSyntaxTextArea editor = new RSyntaxTextArea(new RSyntaxDocument(SyntaxConstants.SYNTAX_STYLE_GROOVY), "", 1, 80);
 
 		editor.setAntiAliasingEnabled(true);
 		editor.setAnimateBracketMatching(false);
@@ -188,26 +172,23 @@ public class ListPanel extends JComponent {
 		editor.setUseFocusableTips(false);
 		editor.setHighlightCurrentLine(false);
 		editor.setLineWrap(false);
-
+		editor.setPaintMarkOccurrencesBorder(false);
+		editor.setPaintTabLines(false);
+		editor.setMarkOccurrences(false);
 		editor.setFont(new Font(MONOSPACED, PLAIN, 14));
 
+		Color defaultForeground = editor.getForeground();
+
 		// update format on change
-		editor.getDocument().addDocumentListener(new LazyDocumentListener(20) {
-
-			private Color valid = editor.getForeground();
-			private Color invalid = Color.red;
-
-			@Override
-			public void update(DocumentEvent evt) {
-				try {
-					String expression = editor.getText().trim();
-					setFormat(expression.isEmpty() ? null : new ExpressionFormat(expression));
-					editor.setForeground(valid);
-				} catch (ScriptException e) {
-					editor.setForeground(invalid);
-				}
+		editor.getDocument().addDocumentListener(new LazyDocumentListener(20, evt -> {
+			try {
+				String expression = editor.getText().trim();
+				setFormat(expression.isEmpty() ? null : new ExpressionFormat(expression));
+				editor.setForeground(defaultForeground);
+			} catch (ScriptException e) {
+				editor.setForeground(Color.RED);
 			}
-		});
+		}));
 
 		return editor;
 	}

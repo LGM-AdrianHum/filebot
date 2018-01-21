@@ -7,6 +7,7 @@ import static java.util.stream.Collectors.*;
 import static net.filebot.Logging.*;
 import static net.filebot.Settings.*;
 import static net.filebot.WebServices.*;
+import static net.filebot.util.ExceptionUtilities.*;
 
 import java.awt.Component;
 import java.io.File;
@@ -14,8 +15,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -32,7 +33,7 @@ class AutoDetectMatcher implements AutoCompleteMatcher {
 
 	private AutoCompleteMatcher movie = new MovieMatcher(TheMovieDB);
 	private AutoCompleteMatcher episode = new EpisodeListMatcher(TheTVDB, false);
-	private AutoCompleteMatcher anime = new EpisodeListMatcher(AniDB, false);
+	private AutoCompleteMatcher anime = new EpisodeListMatcher(AniDB, true);
 	private AutoCompleteMatcher music = new MusicMatcher(MediaInfoID3, AcoustID);
 
 	@Override
@@ -42,16 +43,22 @@ class AutoDetectMatcher implements AutoCompleteMatcher {
 		// can't use parallel stream because default fork/join pool doesn't play well with the security manager
 		ExecutorService workerThreadPool = Executors.newFixedThreadPool(getPreferredThreadPoolSize());
 		try {
-			Map<Group, Future<List<Match<File, ?>>>> matches = groups.entrySet().stream().collect(toMap(Entry::getKey, it -> {
+			// match groups in parallel
+			List<Future<List<Match<File, ?>>>> matches = groups.entrySet().stream().filter(it -> {
+				return it.getKey().types().length == 1; // unambiguous group
+			}).map(it -> {
 				return workerThreadPool.submit(() -> match(it.getKey(), it.getValue(), strict, order, locale, autodetection, parent));
-			}));
+			}).collect(toList());
 
 			// collect results
-			return matches.entrySet().stream().flatMap(it -> {
+			return matches.stream().flatMap(it -> {
 				try {
-					return it.getValue().get().stream();
+					return it.get().stream();
 				} catch (Exception e) {
-					log.log(Level.WARNING, "Failed group: " + it.getKey(), e);
+					// CancellationException is expected
+					if (findCause(e, CancellationException.class) == null) {
+						log.log(Level.WARNING, e, cause("Failed to match group", e));
+					}
 					return Stream.empty();
 				}
 			}).sorted(comparing(Match::getValue, OriginalOrder.of(files))).collect(toList());
@@ -61,23 +68,27 @@ class AutoDetectMatcher implements AutoCompleteMatcher {
 	}
 
 	private List<Match<File, ?>> match(Group group, Collection<File> files, boolean strict, SortOrder order, Locale locale, boolean autodetection, Component parent) throws Exception {
-		if (group.types().length == 1) {
-			for (Type key : group.types()) {
-				switch (key) {
-				case Movie:
-					return movie.match(files, strict, order, locale, autodetection, parent);
-				case Series:
-					return episode.match(files, strict, order, locale, autodetection, parent);
-				case Anime:
-					return anime.match(files, strict, order, locale, autodetection, parent);
-				case Music:
-					return music.match(files, strict, order, locale, autodetection, parent);
-				}
+		AutoCompleteMatcher m = getMatcher(group);
+		if (m != null) {
+			return m.match(files, strict, order, locale, autodetection, parent);
+		}
+		return emptyList();
+	}
+
+	private AutoCompleteMatcher getMatcher(Group group) {
+		for (Type key : group.types()) {
+			switch (key) {
+			case Movie:
+				return movie;
+			case Series:
+				return episode;
+			case Anime:
+				return anime;
+			case Music:
+				return music;
 			}
 		}
-
-		debug.info(format("Ignore group: %s", group));
-		return emptyList();
+		return null;
 	}
 
 }

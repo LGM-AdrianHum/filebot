@@ -1,23 +1,24 @@
 package net.filebot.ui.filter;
 
+import static java.util.Collections.*;
+import static net.filebot.util.FileUtilities.*;
+
 import java.awt.Color;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CancellationException;
 
 import javax.swing.JLabel;
 import javax.swing.JScrollPane;
 import javax.swing.JSpinner;
 import javax.swing.SpinnerNumberModel;
-import javax.swing.event.ChangeEvent;
-import javax.swing.event.ChangeListener;
 import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.TreeModel;
 import javax.swing.tree.TreeNode;
 
 import net.filebot.ui.filter.FileTree.FolderNode;
 import net.filebot.ui.transfer.DefaultTransferHandler;
-import net.filebot.util.FileUtilities;
 import net.filebot.util.ui.GradientStyle;
 import net.filebot.util.ui.LoadingOverlayPane;
 import net.filebot.util.ui.notification.SeparatorBorder;
@@ -49,28 +50,29 @@ class SplitTool extends Tool<TreeModel> {
 		tree.setTransferHandler(new DefaultTransferHandler(null, new FileTreeExportHandler()));
 		tree.setDragEnabled(true);
 
-		spinnerModel.addChangeListener(new ChangeListener() {
-
-			@Override
-			public void stateChanged(ChangeEvent evt) {
-				// update model in foreground, will be much faster than the initial load because length() is cached now
-				if (getRoot() != null) {
-					updateRoot(getRoot());
-				}
+		// update model in foreground, will be much faster than the initial load because length() is cached now
+		spinnerModel.addChangeListener(evt -> {
+			List<File> root = getRoot();
+			if (root.size() > 0) {
+				setRoot(root);
 			}
 		});
 	}
 
 	private long getSplitSize() {
-		return spinnerModel.getNumber().intValue() * FileUtilities.MEGA;
+		return spinnerModel.getNumber().intValue() * ONE_MEGABYTE;
 	}
 
 	@Override
-	protected TreeModel createModelInBackground(File root) throws InterruptedException {
+	protected TreeModel createModelInBackground(List<File> root) {
+		if (root.isEmpty()) {
+			return new DefaultTreeModel(new FolderNode("Volumes", emptyList()));
+		}
+
 		int nextPart = 1;
 		long splitSize = getSplitSize();
 
-		List<File> files = (root != null) ? FileUtilities.listFiles(root) : new ArrayList<File>();
+		List<File> files = listFiles(root, FILES, HUMAN_NAME_ORDER);
 
 		List<TreeNode> rootGroup = new ArrayList<TreeNode>();
 		List<File> currentPart = new ArrayList<File>();
@@ -87,7 +89,7 @@ class SplitTool extends Tool<TreeModel> {
 
 			if (totalSize + fileSize > splitSize) {
 				// part is full, add node and start with next one
-				rootGroup.add(createStatisticsNode(String.format("Disk %d", nextPart++), currentPart));
+				rootGroup.add(createStatisticsNode(nextPart++, currentPart));
 
 				// reset total size and file list
 				totalSize = 0;
@@ -96,11 +98,15 @@ class SplitTool extends Tool<TreeModel> {
 
 			totalSize += fileSize;
 			currentPart.add(f);
+
+			if (Thread.interrupted()) {
+				throw new CancellationException();
+			}
 		}
 
 		if (!currentPart.isEmpty()) {
 			// add last part
-			rootGroup.add(createStatisticsNode(String.format("Disk %d", nextPart++), currentPart));
+			rootGroup.add(createStatisticsNode(nextPart++, currentPart));
 		}
 
 		if (!remainder.isEmpty()) {
@@ -108,6 +114,10 @@ class SplitTool extends Tool<TreeModel> {
 		}
 
 		return new DefaultTreeModel(new FolderNode("Volumes", rootGroup));
+	}
+
+	protected FolderNode createStatisticsNode(int disk, List<File> files) {
+		return createStatisticsNode(String.format("Disk %,d", disk), files);
 	}
 
 	@Override

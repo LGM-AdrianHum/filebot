@@ -4,7 +4,6 @@ import static java.util.Arrays.*;
 import static java.util.Collections.*;
 import static java.util.stream.Collectors.*;
 import static net.filebot.util.JsonUtilities.*;
-import static net.filebot.web.TMDbClient.*;
 
 import java.net.URI;
 import java.util.ArrayList;
@@ -27,13 +26,13 @@ public class TMDbTVClient extends AbstractEpisodeListProvider {
 	}
 
 	@Override
-	public String getName() {
-		return tmdb.getName();
+	public String getIdentifier() {
+		return "TheMovieDB::TV";
 	}
 
 	@Override
-	public String getIdentifier() {
-		return "TheMovieDB::TV";
+	public String getName() {
+		return tmdb.getName();
 	}
 
 	@Override
@@ -73,7 +72,7 @@ public class TMDbTVClient extends AbstractEpisodeListProvider {
 		if (startYear > 0) {
 			query.put("first_air_date_year", startYear);
 		}
-		Object response = tmdb.request("search/tv", query, locale, SEARCH_LIMIT);
+		Object response = tmdb.request("search/tv", query, locale);
 
 		return streamJsonObjects(response, "results").map(it -> {
 			Integer id = getInteger(it, "id");
@@ -97,17 +96,21 @@ public class TMDbTVClient extends AbstractEpisodeListProvider {
 	@Override
 	protected SeriesData fetchSeriesData(SearchResult series, SortOrder sortOrder, Locale locale) throws Exception {
 		// http://api.themoviedb.org/3/tv/id
-		Object tv = tmdb.request("tv/" + series.getId(), emptyMap(), locale, REQUEST_LIMIT);
+		Object tv = tmdb.request("tv/" + series.getId(), emptyMap(), locale);
+
+		// retrieve localized series name from response
+		String name = getString(tv, "name");
+		String originalName = getString(tv, "original_name");
 
 		SeriesInfo info = new SeriesInfo(this, sortOrder, locale, series.getId());
-		info.setName(Stream.of("original_name", "name").map(key -> getString(tv, key)).filter(Objects::nonNull).findFirst().orElse(series.getName()));
-		info.setAliasNames(series.getAliasNames());
+		info.setName(name);
+		info.setAliasNames(Stream.concat(Stream.of(series.getName(), originalName), Stream.of(series.getAliasNames())).filter(Objects::nonNull).filter(s -> !s.equals(name)).distinct().toArray(String[]::new));
 		info.setStatus(getString(tv, "status"));
 		info.setLanguage(getString(tv, "original_language"));
 		info.setStartDate(getStringValue(tv, "first_air_date", SimpleDate::parse));
-		info.setRating(getStringValue(tv, "vote_average", Double::new));
-		info.setRatingCount(getStringValue(tv, "vote_count", Integer::new));
-		info.setRuntime(stream(getArray(tv, "episode_run_time")).map(Object::toString).map(Integer::new).findFirst().orElse(null));
+		info.setRating(getStringValue(tv, "vote_average", Double::parseDouble));
+		info.setRatingCount(getStringValue(tv, "vote_count", Integer::parseInt));
+		info.setRuntime(stream(getArray(tv, "episode_run_time")).map(Object::toString).map(Integer::parseInt).findFirst().orElse(null));
 		info.setGenres(streamJsonObjects(tv, "genres").map(it -> getString(it, "name")).collect(toList()));
 		info.setNetwork(streamJsonObjects(tv, "networks").map(it -> getString(it, "name")).findFirst().orElse(null));
 
@@ -117,9 +120,10 @@ public class TMDbTVClient extends AbstractEpisodeListProvider {
 
 		for (int s : seasons) {
 			// http://api.themoviedb.org/3/tv/id/season/season_number
-			Object season = tmdb.request("tv/" + series.getId() + "/season/" + s, emptyMap(), locale, REQUEST_LIMIT);
+			Object season = tmdb.request("tv/" + series.getId() + "/season/" + s, emptyMap(), locale);
 
 			streamJsonObjects(season, "episodes").forEach(episode -> {
+				Integer id = getInteger(episode, "id");
 				Integer episodeNumber = getInteger(episode, "episode_number");
 				Integer seasonNumber = getInteger(episode, "season_number");
 				String episodeTitle = getString(episode, "name");
@@ -128,9 +132,9 @@ public class TMDbTVClient extends AbstractEpisodeListProvider {
 				Integer absoluteNumber = episodes.size() + 1;
 
 				if (s > 0) {
-					episodes.add(new Episode(series.getName(), seasonNumber, episodeNumber, episodeTitle, absoluteNumber, null, airdate, info));
+					episodes.add(new Episode(name, seasonNumber, episodeNumber, episodeTitle, absoluteNumber, null, airdate, id, info));
 				} else {
-					specials.add(new Episode(series.getName(), null, null, episodeTitle, null, episodeNumber, airdate, info));
+					specials.add(new Episode(name, null, null, episodeTitle, null, episodeNumber, airdate, id, info));
 				}
 			});
 		}

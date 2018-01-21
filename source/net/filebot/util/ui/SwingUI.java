@@ -13,18 +13,24 @@ import java.awt.Frame;
 import java.awt.Graphics2D;
 import java.awt.Image;
 import java.awt.Point;
+import java.awt.SecondaryLoop;
+import java.awt.Toolkit;
 import java.awt.Window;
+import java.awt.datatransfer.StringSelection;
 import java.awt.dnd.DnDConstants;
 import java.awt.event.ActionEvent;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.awt.image.BufferedImage;
 import java.lang.reflect.InvocationTargetException;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -43,6 +49,7 @@ import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
 import javax.swing.Timer;
+import javax.swing.UIManager;
 import javax.swing.event.MouseInputListener;
 import javax.swing.plaf.basic.BasicTableUI;
 import javax.swing.text.JTextComponent;
@@ -54,11 +61,33 @@ import net.filebot.Settings;
 
 public final class SwingUI {
 
+	public static void setNimbusLookAndFeel() {
+		try {
+			UIManager.setLookAndFeel("javax.swing.plaf.nimbus.NimbusLookAndFeel");
+		} catch (Exception e) {
+			debug.log(Level.SEVERE, "Failed to set Nimbus LaF", e);
+		}
+	}
+
+	public static void setSystemLookAndFeel() {
+		try {
+			UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+		} catch (Exception e) {
+			debug.log(Level.SEVERE, "Failed to set System LaF", e);
+		}
+	}
+
 	public static void openURI(String uri) {
 		try {
 			Desktop.getDesktop().browse(URI.create(uri));
 		} catch (Exception e) {
 			debug.log(Level.SEVERE, "Failed to open URI: " + uri, e);
+		}
+	}
+
+	public static void copyToClipboard(String text) {
+		if (text.length() > 0) {
+			Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(text), null);
 		}
 	}
 
@@ -111,7 +140,7 @@ public final class SwingUI {
 	}
 
 	public static boolean isShiftOrAltDown(InputEvent evt) {
-		return checkModifiers(evt.getModifiers(), ActionEvent.SHIFT_MASK) || checkModifiers(evt.getModifiers(), ActionEvent.ALT_MASK);
+		return checkModifiers(evt.getModifiersEx(), InputEvent.SHIFT_DOWN_MASK) || checkModifiers(evt.getModifiersEx(), InputEvent.ALT_DOWN_MASK);
 	}
 
 	public static boolean isShiftOrAltDown(ActionEvent evt) {
@@ -129,6 +158,9 @@ public final class SwingUI {
 		button.setVerticalTextPosition(SwingConstants.BOTTOM);
 		button.setOpaque(false);
 
+		// fix Windows 10 button padding
+		button.setMaximumSize(new Dimension(36, 36));
+
 		if (Settings.isMacApp()) {
 			button.setPreferredSize(new Dimension(28, 27));
 		} else {
@@ -139,20 +171,24 @@ public final class SwingUI {
 	}
 
 	public static void installAction(JComponent component, KeyStroke keystroke, Action action) {
+		installAction(component, JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT, keystroke, action);
+	}
+
+	public static void installAction(JComponent component, int condition, KeyStroke keystroke, Action action) {
 		Object key = action.getValue(Action.NAME);
 
 		if (key == null) {
 			throw new IllegalArgumentException("Action must have a name");
 		}
 
-		component.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(keystroke, key);
+		component.getInputMap(condition).put(keystroke, key);
 		component.getActionMap().put(key, action);
 
 		// automatically add Mac OS X compatibility (on Mac the BACKSPACE key is called DELETE, and there is no DELETE key)
 		if (keystroke.getKeyCode() == KeyEvent.VK_DELETE) {
 			KeyStroke macKeyStroke = KeyStroke.getKeyStroke(KeyEvent.VK_BACK_SPACE, keystroke.getModifiers(), keystroke.isOnKeyRelease());
 			Object macKey = "mac." + action.getValue(Action.NAME);
-			component.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(macKeyStroke, macKey);
+			component.getInputMap(condition).put(macKeyStroke, macKey);
 			component.getActionMap().put(macKey, action);
 		}
 	}
@@ -164,14 +200,14 @@ public final class SwingUI {
 		component.getDocument().addUndoableEditListener(undoSupport);
 
 		// install undo action
-		installAction(component, KeyStroke.getKeyStroke(KeyEvent.VK_Z, KeyEvent.CTRL_MASK), newAction("Undo", evt -> {
+		installAction(component, KeyStroke.getKeyStroke(KeyEvent.VK_Z, KeyEvent.CTRL_DOWN_MASK), newAction("Undo", evt -> {
 			if (undoSupport.canUndo()) {
 				undoSupport.undo();
 			}
 		}));
 
 		// install redo action
-		installAction(component, KeyStroke.getKeyStroke(KeyEvent.VK_Y, KeyEvent.CTRL_MASK), newAction("Redo", evt -> {
+		installAction(component, KeyStroke.getKeyStroke(KeyEvent.VK_Y, KeyEvent.CTRL_DOWN_MASK), newAction("Redo", evt -> {
 			if (undoSupport.canRedo()) {
 				undoSupport.redo();
 			}
@@ -271,7 +307,7 @@ public final class SwingUI {
 		return new Dimension(icon.getIconWidth(), icon.getIconHeight());
 	}
 
-	public static Timer invokeLater(int delay, final Runnable runnable) {
+	public static Timer invokeLater(int delay, Runnable runnable) {
 		Timer timer = new Timer(delay, (evt) -> {
 			runnable.run();
 		});
@@ -282,14 +318,28 @@ public final class SwingUI {
 		return timer;
 	}
 
-	public static void withWaitCursor(Object source, BackgroundRunnable runnable) throws Exception {
-		Window window = getWindow(source);
+	public static void withWaitCursor(Object source, BackgroundRunnable runnable) {
+		// window ancestor may be null
+		Optional<Window> window = Optional.ofNullable(getWindow(source));
+
 		try {
-			window.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+			window.ifPresent(w -> w.setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR)));
 			runnable.run();
+		} catch (Exception e) {
+			debug.log(Level.SEVERE, e, e::getMessage);
 		} finally {
-			window.setCursor(Cursor.getDefaultCursor());
+			window.ifPresent(w -> w.setCursor(Cursor.getDefaultCursor()));
 		}
+	}
+
+	public static WindowAdapter windowClosed(Consumer<WindowEvent> handler) {
+		return new WindowAdapter() {
+
+			@Override
+			public void windowClosing(WindowEvent evt) {
+				handler.accept(evt);
+			}
+		};
 	}
 
 	public static MouseAdapter mouseClicked(Consumer<MouseEvent> handler) {
@@ -300,6 +350,10 @@ public final class SwingUI {
 				handler.accept(evt);
 			}
 		};
+	}
+
+	public static JButton newButton(String name, Consumer<ActionEvent> action) {
+		return new JButton(new LambdaAction(name, null, action));
 	}
 
 	public static JButton newButton(String name, Icon icon, Consumer<ActionEvent> action) {
@@ -329,12 +383,37 @@ public final class SwingUI {
 		}
 	}
 
+	public static <T> T onSecondaryLoop(BackgroundSupplier<T> supplier) throws ExecutionException, InterruptedException {
+		// run spawn new EDT and block current EDT
+		SecondaryLoop secondaryLoop = Toolkit.getDefaultToolkit().getSystemEventQueue().createSecondaryLoop();
+
+		SwingWorker<T, Void> worker = newSwingWorker(supplier, null, null, secondaryLoop::exit);
+		worker.execute();
+
+		// wait for worker to finish without blocking the EDT
+		secondaryLoop.enter();
+
+		return worker.get();
+	}
+
 	public static SwingWorker<Void, Void> newSwingWorker(BackgroundRunnable doInBackground) {
 		return new SwingRunnable(doInBackground);
 	}
 
+	public static <T> SwingWorker<T, Void> newSwingWorker(BackgroundSupplier<T> doInBackground, Consumer<T> done) {
+		return new SwingLambda<T, Void>(doInBackground, done, null, null);
+	}
+
 	public static <T> SwingWorker<T, Void> newSwingWorker(BackgroundSupplier<T> doInBackground, Consumer<T> done, Consumer<Exception> error) {
-		return new SwingLambda<T, Void>(doInBackground, done, error);
+		return new SwingLambda<T, Void>(doInBackground, done, error, null);
+	}
+
+	public static <T> SwingWorker<T, Void> newSwingWorker(BackgroundSupplier<T> doInBackground, Consumer<T> done, Runnable close) {
+		return new SwingLambda<T, Void>(doInBackground, done, null, close);
+	}
+
+	public static <T> SwingWorker<T, Void> newSwingWorker(BackgroundSupplier<T> doInBackground, Consumer<T> done, Consumer<Exception> error, Runnable close) {
+		return new SwingLambda<T, Void>(doInBackground, done, error, close);
 	}
 
 	private static class SwingRunnable extends SwingWorker<Void, Void> {
@@ -365,13 +444,17 @@ public final class SwingUI {
 	private static class SwingLambda<T, V> extends SwingWorker<T, V> {
 
 		private BackgroundSupplier<T> doInBackground;
-		private Consumer<T> done;
-		private Consumer<Exception> error;
+		private Optional<Consumer<T>> done;
+		private Optional<Consumer<Exception>> error;
 
-		public SwingLambda(BackgroundSupplier<T> doInBackground, Consumer<T> done, Consumer<Exception> error) {
+		private Optional<Runnable> close;
+
+		public SwingLambda(BackgroundSupplier<T> doInBackground, Consumer<T> done, Consumer<Exception> error, Runnable close) {
 			this.doInBackground = doInBackground;
-			this.done = done;
-			this.error = error;
+
+			this.done = Optional.ofNullable(done);
+			this.error = Optional.ofNullable(error);
+			this.close = Optional.ofNullable(close);
 		}
 
 		@Override
@@ -382,10 +465,17 @@ public final class SwingUI {
 		@Override
 		protected void done() {
 			try {
-				done.accept(get());
-			} catch (InterruptedException | ExecutionException e) {
-				error.accept(e);
+				T value = get();
+				done.ifPresent(c -> c.accept(value));
+			} catch (Exception e) {
+				error.orElse(this::printException).accept(e); // print stacktrace by default
+			} finally {
+				close.ifPresent(Runnable::run);
 			}
+		}
+
+		private void printException(Exception e) {
+			debug.log(Level.SEVERE, e, e::toString);
 		}
 	}
 

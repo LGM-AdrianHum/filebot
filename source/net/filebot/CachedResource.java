@@ -4,6 +4,7 @@ import static net.filebot.Logging.*;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
@@ -17,16 +18,19 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.logging.Level;
 
 import org.w3c.dom.Document;
 
+import net.filebot.util.ByteBufferInputStream;
+import net.filebot.util.ByteBufferOutputStream;
 import net.filebot.util.JsonUtilities;
 import net.filebot.web.WebRequest;
 
 public class CachedResource<K, R> implements Resource<R> {
 
 	public static final int DEFAULT_RETRY_LIMIT = 2;
-	public static final Duration DEFAULT_RETRY_DELAY = Duration.ofSeconds(2);
+	public static final Duration DEFAULT_RETRY_DELAY = Duration.ofSeconds(5);
 
 	private K key;
 
@@ -81,7 +85,7 @@ public class CachedResource<K, R> implements Resource<R> {
 
 			try {
 				ByteBuffer data = retry(() -> fetch.fetch(url, lastModified), retryLimit, retryWait);
-				debug.finest(format("Received %,d bytes", data == null ? 0 : data.remaining()));
+				debug.finest(WebRequest.log(data));
 
 				// 304 Not Modified
 				if (data == null && element != null && element.getObjectValue() != null) {
@@ -89,22 +93,27 @@ public class CachedResource<K, R> implements Resource<R> {
 				}
 
 				if (data == null) {
-					throw new IllegalStateException(String.format("Response data is null: %s => %s", key, url));
+					throw new IOException(String.format("Response data is null: %s => %s", key, url));
 				}
 
 				return parse.transform(data);
-			} catch (IOException e) {
-				debug.warning(format("Fetch failed: %s", e.getMessage()));
+			} catch (Exception e) {
+				debug.log(Level.SEVERE, "Fetch failed: " + url, e);
 
 				// use previously cached data if possible
 				if (element == null || element.getObjectValue() == null) {
 					throw e;
 				}
-				return element.getObjectKey();
+
+				return element.getObjectValue();
 			}
 		});
 
-		return cast.transform(value);
+		try {
+			return cast.transform(value);
+		} catch (Exception e) {
+			throw new IllegalStateException(String.format("Failed to cast cached value: %s => %s (%s)", key, value, cache), e);
+		}
 	}
 
 	protected <T> T retry(Callable<T> callable, int retryCount, Duration retryWaitTime) throws Exception {
@@ -115,11 +124,11 @@ public class CachedResource<K, R> implements Resource<R> {
 			throw e;
 		} catch (IOException e) {
 			// retry or rethrow exception
-			if (retryCount > 0) {
+			if (retryCount <= 0) {
 				throw e;
 			}
 
-			debug.fine(format("Fetch failed: Retry %d => %s", retryCount, e.getMessage()));
+			debug.warning(format("Fetch failed: Try again in %d seconds (%d more) => %s", retryWaitTime.getSeconds(), retryCount, e));
 			Thread.sleep(retryWaitTime.toMillis());
 			return retry(callable, retryCount - 1, retryWaitTime.multipliedBy(2));
 		}
@@ -131,41 +140,61 @@ public class CachedResource<K, R> implements Resource<R> {
 	}
 
 	public static Transform<ByteBuffer, byte[]> getBytes() {
-		return (data) -> {
+		return data -> {
 			byte[] bytes = new byte[data.remaining()];
 			data.get(bytes, 0, bytes.length);
 			return bytes;
 		};
 	}
 
+	public static Transform<ByteBuffer, byte[]> getBytes(Transform<InputStream, InputStream> decompressor) {
+		return data -> {
+			ByteBufferOutputStream buffer = new ByteBufferOutputStream(data.remaining());
+			try (InputStream in = decompressor.transform(new ByteBufferInputStream(data))) {
+				buffer.transferFully(in);
+			} catch (Exception e) {
+				throw new RuntimeException(e);
+			}
+			return buffer.getByteArray();
+		};
+	}
+
 	public static Transform<ByteBuffer, String> getText(Charset charset) {
-		return (data) -> charset.decode(data).toString();
+		return data -> charset.decode(data).toString();
 	}
 
 	public static <T> Transform<T, String> validateXml(Transform<T, String> parse) {
-		return (object) -> {
+		return object -> {
 			String xml = parse.transform(object);
-			WebRequest.validateXml(xml);
-			return xml;
+			try {
+				WebRequest.validateXml(xml);
+				return xml;
+			} catch (Exception e) {
+				throw new InvalidResponseException("Invalid XML", xml, e);
+			}
 		};
 	}
 
 	public static <T> Transform<T, String> validateJson(Transform<T, String> parse) {
-		return (object) -> {
+		return object -> {
 			String json = parse.transform(object);
-			JsonUtilities.readJson(json);
-			return json;
+			try {
+				JsonUtilities.readJson(json);
+				return json;
+			} catch (Exception e) {
+				throw new InvalidResponseException("Invalid JSON", json, e);
+			}
 		};
 	}
 
 	public static <T> Transform<T, Document> getXml(Transform<T, String> parse) {
-		return (object) -> {
+		return object -> {
 			return WebRequest.getDocument(parse.transform(object));
 		};
 	}
 
 	public static <T> Transform<T, Object> getJson(Transform<T, String> parse) {
-		return (object) -> {
+		return object -> {
 			return JsonUtilities.readJson(parse.transform(object));
 		};
 	}
@@ -223,7 +252,7 @@ public class CachedResource<K, R> implements Resource<R> {
 	}
 
 	private static Consumer<Map<String, List<String>>> storeETag(URL url, BiConsumer<URL, String> etagStore, Predicate<String> etagFilter) {
-		return (responseHeaders) -> {
+		return responseHeaders -> {
 			WebRequest.getETag(responseHeaders).filter(etagFilter).ifPresent(etag -> {
 				debug.finest(format("Store ETag: %s", etag));
 				etagStore.accept(url, etag);

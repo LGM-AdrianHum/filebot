@@ -30,13 +30,10 @@ public class TheTVDBClientTest {
 
 	@Test
 	public void searchGerman() throws Exception {
-		List<SearchResult> results = db.search("Buffy the Vampire Slayer", Locale.GERMAN);
-
-		assertEquals(2, results.size());
+		List<SearchResult> results = db.search("Buffy", Locale.GERMAN);
 
 		SearchResult first = results.get(0);
-
-		assertEquals("Buffy the Vampire Slayer", first.getName());
+		assertEquals("Buffy", first.getName());
 		assertEquals(70327, first.getId());
 	}
 
@@ -80,10 +77,27 @@ public class TheTVDBClientTest {
 		assertEquals("1", first.getSeason().toString());
 		assertEquals(null, first.getAbsolute()); // should be "1" but data has not yet been entered
 		assertEquals("2004-03-12", first.getAirdate().toString());
+		assertEquals("296337", first.getId().toString());
 	}
 
 	@Test
-	public void getEpisodeListNumbering() throws Exception {
+	public void getEpisodeListMissingInformation() throws Exception {
+		List<Episode> list = db.getEpisodeList(wonderfalls, SortOrder.Airdate, Locale.JAPANESE);
+
+		Episode first = list.get(0);
+
+		assertEquals("Wonderfalls", first.getSeriesName());
+		assertEquals("Wax Lion", first.getTitle());
+	}
+
+	@Test
+	public void getEpisodeListIllegalSeries() throws Exception {
+		List<Episode> list = db.getEpisodeList(new SearchResult(313193, "*** DOES NOT EXIST ***"), SortOrder.Airdate, Locale.ENGLISH);
+		assertTrue(list.isEmpty());
+	}
+
+	@Test
+	public void getEpisodeListNumberingDVD() throws Exception {
 		List<Episode> list = db.getEpisodeList(firefly, SortOrder.DVD, Locale.ENGLISH);
 
 		Episode first = list.get(0);
@@ -94,6 +108,20 @@ public class TheTVDBClientTest {
 		assertEquals("1", first.getSeason().toString());
 		assertEquals("1", first.getAbsolute().toString());
 		assertEquals("2002-12-20", first.getAirdate().toString());
+	}
+
+	@Test
+	public void getEpisodeListNumberingAbsoluteAirdate() throws Exception {
+		List<Episode> list = db.getEpisodeList(firefly, SortOrder.AbsoluteAirdate, Locale.ENGLISH);
+
+		Episode first = list.get(0);
+		assertEquals("Firefly", first.getSeriesName());
+		assertEquals("2002-09-20", first.getSeriesInfo().getStartDate().toString());
+		assertEquals("The Train Job", first.getTitle());
+		assertEquals("20020920", first.getEpisode().toString());
+		assertEquals(null, first.getSeason());
+		assertEquals("2", first.getAbsolute().toString());
+		assertEquals("2002-09-20", first.getAirdate().toString());
 	}
 
 	public void getEpisodeListLink() {
@@ -128,7 +156,7 @@ public class TheTVDBClientTest {
 		assertEquals("tt0934814", it.getImdbId());
 		assertEquals("Friday", it.getAirsDayOfWeek());
 		assertEquals("8:00 PM", it.getAirsTime());
-		assertEquals(1000, it.getOverview().length(), 100);
+		assertEquals(500, it.getOverview().length(), 100);
 		assertEquals("http://thetvdb.com/banners/graphical/80348-g26.jpg", it.getBannerUrl().toString());
 	}
 
@@ -136,10 +164,10 @@ public class TheTVDBClientTest {
 	public void getArtwork() throws Exception {
 		Artwork i = db.getArtwork(buffy.getId(), "fanart", Locale.ENGLISH).get(0);
 
-		assertEquals("[fanart, 1920x1080]", i.getTags().toString());
-		assertEquals("http://thetvdb.com/banners/fanart/original/70327-7.jpg", i.getUrl().toString());
-		assertTrue(i.matches("fanart", "1920x1080"));
-		assertFalse(i.matches("fanart", "1920x1080", "1"));
+		assertEquals("[fanart, graphical, 1280x720]", i.getTags().toString());
+		assertEquals("http://thetvdb.com/banners/fanart/original/70327-31.jpg", i.getUrl().toString());
+		assertTrue(i.matches("fanart", "1280x720"));
+		assertFalse(i.matches("fanart", "1280x720", "1"));
 		assertEquals(8.0, i.getRating(), 1.0);
 	}
 
@@ -154,10 +182,24 @@ public class TheTVDBClientTest {
 		Person p = db.getActors(firefly.getId(), Locale.ENGLISH).get(0);
 		assertEquals("Alan Tudyk", p.getName());
 		assertEquals("Hoban 'Wash' Washburne", p.getCharacter());
-		assertEquals(null, p.getJob());
+		assertEquals("Actor", p.getJob());
 		assertEquals(null, p.getDepartment());
 		assertEquals("0", p.getOrder().toString());
 		assertEquals("http://thetvdb.com/banners/actors/68409.jpg", p.getImage().toString());
+	}
+
+	@Test
+	public void getEpisodeInfo() throws Exception {
+		EpisodeInfo i = db.getEpisodeInfo(296337, Locale.ENGLISH);
+
+		assertEquals("78845", i.getSeriesId().toString());
+		assertEquals("296337", i.getId().toString());
+		assertEquals(8.2, i.getRating(), 0.1);
+		assertEquals(6, i.getVotes(), 5);
+		assertEquals("When Jaye Tyler is convinced by a waxed lion to chase after a shinny quarter, she finds herself returning a lost purse to a lady (who instead of thanking her, is punched in the face), meeting an attractive and sweet bartender names Eric, introducing her sister, Sharon to the EPS newly divorced bachelor, Thomas, she knows, and later discovering her sister, Sharon's sexuality.", i.getOverview().toString());
+		assertEquals("[Todd Holland, Bryan Fuller, Todd Holland]", i.getDirectors().toString());
+		assertEquals("[Todd Holland, Bryan Fuller]", i.getWriters().toString());
+		assertEquals("[Scotch Ellis Loring, Gerry Fiorini, Kim Roberts, Corry Karpf, Curt Wu, Bailey Stocker, Lisa Marcos, Jorge Molina, Morgan Drmaj, Chantal Purdy, Kari Matchett, Neil Grayston, Anna Starnino, Melissa Grelo, Brandon Oakes, Scotch Ellis Loring, Ted Dykstra, Kathryn Greenwood, G]", i.getActors().toString());
 	}
 
 }

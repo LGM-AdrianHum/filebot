@@ -13,8 +13,12 @@ public class SearchResult implements Serializable {
 	protected String name;
 	protected String[] aliasNames;
 
-	protected SearchResult() {
+	public SearchResult() {
 		// used by serializer
+	}
+
+	public SearchResult(int id) {
+		this(id, null, EMPTY_STRING_ARRAY);
 	}
 
 	public SearchResult(int id, String name) {
@@ -28,7 +32,7 @@ public class SearchResult implements Serializable {
 	public SearchResult(int id, String name, String[] aliasNames) {
 		this.id = id;
 		this.name = name;
-		this.aliasNames = (aliasNames == null || aliasNames.length == 0) ? EMPTY_STRING_ARRAY : aliasNames.clone();
+		this.aliasNames = aliasNames == null || aliasNames.length == 0 ? EMPTY_STRING_ARRAY : aliasNames.clone();
 	}
 
 	public int getId() {
@@ -79,7 +83,7 @@ public class SearchResult implements Serializable {
 
 	@Override
 	public String toString() {
-		return name;
+		return name != null ? name : String.valueOf(id);
 	}
 
 	@Override

@@ -1,29 +1,40 @@
 package net.filebot.format;
 
-import java.util.Arrays;
-import java.util.function.Function;
-import java.util.stream.Stream;
+import java.util.Collection;
+import java.util.function.Supplier;
 
 import groovy.lang.GroovyObjectSupport;
 
 public class DynamicBindings extends GroovyObjectSupport {
 
-	private Function<String, Object> map;
-	private String[] keys;
+	private Supplier<Collection<?>> keys;
+	private Get<String, Object> properties;
 
-	public DynamicBindings(Function<String, Object> map, Stream<String> keys) {
-		this.map = map;
-		this.keys = keys.toArray(String[]::new);
+	public DynamicBindings(Supplier<Collection<?>> keys, Get<String, Object> properties) {
+		this.keys = keys;
+		this.properties = properties;
 	}
 
 	@Override
 	public Object getProperty(String property) {
-		return map.apply(property);
+		try {
+			return properties.get(property);
+		} catch (Exception e) {
+			if (e instanceof BindingException) {
+				throw (BindingException) e;
+			}
+			throw new BindingException(property, e.getMessage(), e);
+		}
 	}
 
 	@Override
 	public String toString() {
-		return Arrays.toString(keys);
+		return keys.get().toString();
+	}
+
+	@FunctionalInterface
+	public interface Get<T, R> {
+		R get(T t) throws Exception;
 	}
 
 }
